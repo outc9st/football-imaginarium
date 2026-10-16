@@ -72,7 +72,7 @@ table{width:100%;border-collapse:collapse}
   <h2 style="margin:10px 0 6px">Войти в игру</h2>
   <div class="muted" style="margin-bottom:12px">Введи код комнаты, который дал тебе создатель.</div>
   <label>Код комнаты
-    <input id="roomCodeInput" maxlength="6" autocomplete="off" placeholder="A7K3P" oninput="this.value=this.value.toUpperCase().replace(/[^A-Z0-9]/g,'').slice(0,6)" onkeydown="if(event.key==='Enter')joinRoom()">
+    <input id="roomCodeInput" maxlength="5" autocomplete="off" placeholder="A7K3P" oninput="this.value=this.value.toUpperCase().replace(/[^A-Z0-9]/g,'').slice(0,5)" onkeydown="if(event.key==='Enter')joinRoom()">
   </label>
   <button class="primary-wide" onclick="joinRoom()">Войти →</button>
 </div>
@@ -101,10 +101,10 @@ table{width:100%;border-collapse:collapse}
       <label>Количество раундов
         <select id="roundMode" onchange="selectedRoundMode=this.value"></select>
       </label>
-      <button class="primary-wide" onclick="startGame()">Начать игру</button>
+      <button class="primary-wide start-game-btn" onclick="startGame()">Начать игру</button>
     </div>
   </div>
-  <div class="muted room-hint">Сейчас это визуальный прототип лобби. Реальное подключение друзей через Render/WebSocket подключим следующим шагом.</div>
+  <div class="muted room-hint">Комната работает через WebSocket: изменения игроков приходят всем участникам автоматически.</div>
 </div>
 
 <div class="panel" id="identityPanel" style="display:none"></div>
@@ -140,6 +140,11 @@ let nicknameReady = false;
 let onlineScreen = "home";
 let onlineRoomCode = "";
 let onlineIsHost = false;
+let onlineSocket = null;
+let onlinePlayerId = "";
+let onlinePlayers = [];
+let onlineConnected = false;
+let onlineStarted = false;
 function randomBots(count){
   return shuffle(botRoster).slice(0,count);
 }
@@ -278,57 +283,127 @@ function renderLobby(){
  updateRoundOptions();
 }
 
+function connectOnline(){
+ if(onlineSocket && (onlineSocket.readyState===WebSocket.OPEN || onlineSocket.readyState===WebSocket.CONNECTING)) return;
+ const proto=location.protocol==='https:'?'wss':'ws';
+ try{ onlineSocket=new WebSocket(`${proto}://${location.host}`); }
+ catch(e){ alert("Не удалось подключиться к серверу."); return; }
+ onlineSocket.addEventListener('open',()=>{
+   onlineConnected=true;
+   render();
+ });
+ onlineSocket.addEventListener('message',(event)=>{
+   let m; try{m=JSON.parse(event.data)}catch{return;}
+   if(m.type==='connected'){
+     onlinePlayerId=m.playerId||'';
+     return;
+   }
+   if(m.type==='lobby'){
+     onlineRoomCode=m.roomCode||onlineRoomCode;
+     onlinePlayers=Array.isArray(m.players)?m.players:[];
+     onlineIsHost=!!onlinePlayers.find(p=>p.id===onlinePlayerId)?.isHost;
+     onlineScreen='room';
+     render();
+     return;
+   }
+   if(m.type==='gameStarting'){
+     onlineStarted=true;
+     onlinePlayers=Array.isArray(m.players)?m.players:onlinePlayers;
+     const status=document.getElementById('roomStatus');
+     if(status) status.innerHTML='<b>Игра запускается…</b>';
+     const btn=document.querySelector('#roomPanel .start-game-btn');
+     if(btn) btn.disabled=true;
+     return;
+   }
+   if(m.type==='error'){
+     alert(m.message||'Ошибка подключения.');
+     return;
+   }
+   if(m.type==='leftRoom'){
+     onlineRoomCode=''; onlineIsHost=false; onlinePlayers=[]; onlineStarted=false; onlineScreen='home'; render();
+   }
+ });
+ onlineSocket.addEventListener('close',()=>{
+   onlineConnected=false;
+   onlineSocket=null;
+   if(onlineScreen==='room'){
+     const status=document.getElementById('roomStatus');
+     if(status) status.innerHTML='<span class="danger">Соединение с сервером потеряно. Обнови страницу и подключись снова.</span>';
+   }
+ });
+ onlineSocket.addEventListener('error',()=>{
+   onlineConnected=false;
+ });
+}
+
+function sendOnline(payload){
+ if(!onlineSocket || onlineSocket.readyState!==WebSocket.OPEN){
+   alert('Соединение с сервером ещё не установлено. Попробуй ещё раз через секунду.');
+   connectOnline();
+   return false;
+ }
+ onlineSocket.send(JSON.stringify(payload));
+ return true;
+}
+
 function enterOnlineHome(mode){
- const input=document.getElementById("nicknameInput");
- const value=(input?.value || "").trim().replace(/\s+/g," ");
- if(!value){alert("Введи никнейм."); input?.focus(); return;}
+ const input=document.getElementById('nicknameInput');
+ const value=(input?.value || '').trim().replace(/\s+/g,' ');
+ if(!value){alert('Введи никнейм.'); input?.focus(); return;}
  playerNickname=value.slice(0,24);
  nicknameReady=true;
- if(mode==="join"){
-   onlineScreen="join";
+ connectOnline();
+ if(mode==='join'){
+   onlineScreen='join';
+   render();
  }else{
-   onlineIsHost=true;
-   onlineRoomCode=Math.random().toString(36).slice(2,7).toUpperCase();
-   onlineScreen="room";
+   onlineScreen='room';
+   render();
+   const create=()=>sendOnline({type:'createRoom',name:playerNickname});
+   if(onlineSocket?.readyState===WebSocket.OPEN) create();
+   else setTimeout(create,250);
  }
- render();
 }
 
 function showOnlineHome(){
+ if(onlineSocket && onlineSocket.readyState===WebSocket.OPEN && onlineRoomCode){
+   sendOnline({type:'leaveRoom'});
+ }else{
+   onlineRoomCode=''; onlineIsHost=false; onlinePlayers=[]; onlineStarted=false;
+ }
  gameStarted=false;
- onlineScreen="home";
- onlineRoomCode="";
- onlineIsHost=false;
+ onlineScreen='home';
  render();
 }
 
 function joinRoom(){
- const input=document.getElementById("roomCodeInput");
- const code=(input?.value || "").trim().toUpperCase();
- if(code.length<4){alert("Введи код комнаты."); input?.focus(); return;}
- onlineRoomCode=code;
- onlineIsHost=false;
- onlineScreen="room";
- render();
+ const input=document.getElementById('roomCodeInput');
+ const code=(input?.value || '').trim().toUpperCase();
+ if(code.length<5){alert('Введи код комнаты.'); input?.focus(); return;}
+ if(!nicknameReady || !playerNickname){alert('Сначала задай никнейм.'); return;}
+ connectOnline();
+ const tryJoin=()=>sendOnline({type:'joinRoom',roomCode:code,name:playerNickname});
+ if(onlineSocket?.readyState===WebSocket.OPEN) tryJoin();
+ else setTimeout(tryJoin,250);
 }
 
 function changeNickname(){
  gameStarted=false;
- onlineScreen="home";
+ onlineScreen='home';
  render();
- setTimeout(()=>{const input=document.getElementById("nicknameInput"); if(input){input.value=playerNickname;input.focus();input.select();}},0);
+ setTimeout(()=>{const input=document.getElementById('nicknameInput'); if(input){input.value=playerNickname;input.focus();input.select();}},0);
 }
 
 function startGame(){
- if(!nicknameReady || !playerNickname){alert("Сначала задай никнейм.");return;}
- if(selectedBotCount<3){alert("Нужно выбрать хотя бы 3 ботов.");return;}
- selectedBots=randomBots(selectedBotCount);
- players=[{name:playerNickname,score:0,hand:[],playedRounds:0,form:[]},...selectedBots.map(name=>({name,score:0,hand:[],playedRounds:0,form:[]}))];
- gameStarted=true;
- availableIds=deck.map(c=>c.id);
- players.forEach(p=>p.hand=draw(6));
- round=1; storyteller=Math.floor(Math.random()*players.length); submissions=[]; votesThisRound=[]; clue=""; secretId=null; phase="story"; selected=null; clueHistory.length=0; usedClues.clear();
- render();
+ if(!nicknameReady || !playerNickname){alert('Сначала задай никнейм.');return;}
+ if(!onlineRoomCode || !onlineIsHost){alert('Только создатель комнаты может запустить игру.');return;}
+ const bots=Math.max(3,Math.min(7,Number(selectedBotCount)||3));
+ const rounds=selectedRoundMode||'8';
+ if(sendOnline({type:'setSettings',botCount:bots,roundMode:rounds}) && sendOnline({type:'startGame'})){
+   onlineStarted=true;
+   const status=document.getElementById('roomStatus');
+   if(status) status.innerHTML='<b>Игра запускается…</b>';
+ }
 }
 
 function render(){
@@ -344,8 +419,23 @@ function render(){
    if(input && playerNickname && onlineScreen==="home") input.value=playerNickname;
    if(onlineScreen==="room"){
      document.getElementById("roomCodeLabel").textContent=onlineRoomCode;
-     document.getElementById("roomStatus").innerHTML=onlineIsHost ? "Комната создана. Отправь код друзьям." : "Ты подключён к комнате. Ждём запуска игры.";
-     document.getElementById("roomPlayers").innerHTML=`<div class="room-player"><span>● ${playerNickname}</span><span class="role">${onlineIsHost?"👑 Создатель":"Игрок"}</span></div>`;
+     const status=document.getElementById("roomStatus");
+     if(onlineStarted){
+       status.innerHTML="<b>Игра запускается…</b>";
+     }else if(!onlineConnected){
+       status.innerHTML="<span class=\"danger\">Нет соединения с сервером.</span>";
+     }else{
+       status.innerHTML=onlineIsHost ? "Комната создана. Отправь код друзьям." : "Ты подключён к комнате. Ждём запуска игры.";
+     }
+     const list=onlinePlayers.length?onlinePlayers:[{id:onlinePlayerId,name:playerNickname,isHost:onlineIsHost}];
+     document.getElementById("roomPlayers").innerHTML=list.map(p=>`<div class="room-player"><span>● ${p.name}${p.id===onlinePlayerId?' <span class="muted">(ты)</span>':''}</span><span class="role">${p.isHost?"👑 Создатель":"Игрок"}</span></div>`).join("");
+     const botSelect=document.getElementById("botCount");
+     const roundSelect=document.getElementById("roundMode");
+     const isHost=onlineIsHost;
+     if(botSelect) botSelect.disabled=!isHost;
+     if(roundSelect) roundSelect.disabled=!isHost;
+     const startBtn=document.querySelector('#roomPanel .start-game-btn');
+     if(startBtn){startBtn.disabled=!isHost || onlinePlayers.length<1 || onlineStarted; startBtn.textContent=onlineStarted?'Запуск…':'Начать игру';}
      renderLobby();
    }
    return;
@@ -2155,6 +2245,7 @@ function nextRound(){
  render();
 }
 render();
+connectOnline();
 </script>
 </body>
 </html>
