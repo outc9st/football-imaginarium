@@ -309,10 +309,10 @@ function connectOnline(){
    if(m.type==='gameStarting'){
      onlineStarted=true;
      onlinePlayers=Array.isArray(m.players)?m.players:onlinePlayers;
-     selectedBotCount=Math.max(3,Math.min(7,Number(m.settings?.botCount)||3));
-     selectedRoundMode=m.settings?.roundMode || selectedRoundMode || '8';
-     selectedBots=Array.isArray(m.settings?.botNames) ? m.settings.botNames.slice() : randomBots(selectedBotCount);
-     startLocalGameFromOnline();
+     const status=document.getElementById('roomStatus');
+     if(status) status.innerHTML='<b>Игра запускается…</b>';
+     const btn=document.querySelector('#roomPanel .start-game-btn');
+     if(btn) btn.disabled=true;
      return;
    }
    if(m.type==='error'){
@@ -399,59 +399,11 @@ function startGame(){
  if(!onlineRoomCode || !onlineIsHost){alert('Только создатель комнаты может запустить игру.');return;}
  const bots=Math.max(3,Math.min(7,Number(selectedBotCount)||3));
  const rounds=selectedRoundMode||'8';
- // Бросаем состав ботов один раз у ведущего и передаём его серверу,
- // чтобы у всех участников игры был одинаковый состав.
- const botNames=randomBots(bots);
- selectedBots=botNames.slice();
- if(sendOnline({type:'setSettings',botCount:bots,roundMode:rounds,botNames}) && sendOnline({type:'startGame'})){
+ if(sendOnline({type:'setSettings',botCount:bots,roundMode:rounds}) && sendOnline({type:'startGame'})){
    onlineStarted=true;
    const status=document.getElementById('roomStatus');
    if(status) status.innerHTML='<b>Игра запускается…</b>';
  }
-}
-
-function startLocalGameFromOnline(){
- // На этом этапе онлайн-слой передаёт состав и настройки в существующую
- // игровую логику v25. Это убирает зависание лобби и запускает саму игру.
- // Полная синхронизация ходов между несколькими людьми будет следующим этапом.
- const humans=Array.isArray(onlinePlayers)?onlinePlayers.slice():[];
- const meIndex=Math.max(0,humans.findIndex(p=>p.id===onlinePlayerId));
- const me=humans.splice(meIndex,1)[0] || {id:onlinePlayerId,name:playerNickname};
- const humanPlayers=[me,...humans];
- const bots=(Array.isArray(selectedBots)&&selectedBots.length?selectedBots:randomBots(selectedBotCount)).slice(0,selectedBotCount);
- selectedBots=bots.slice();
- players=humanPlayers.map((p,i)=>({
-   id:p.id || ('online-'+i),
-   name:p.name || 'Игрок',
-   score:0,
-   form:[],
-   playedRounds:0,
-   hand:[],
-   isBot:false
- }));
- bots.forEach((name,i)=>players.push({
-   id:'bot-'+i,
-   name,
-   score:0,
-   form:[],
-   playedRounds:0,
-   hand:[],
-   isBot:true
- }));
- // Для локальной игровой логики текущий клиент всегда является players[0].
- availableIds=deck.map(c=>c.id);
- players.forEach(p=>p.hand=draw(6));
- submissions=[];
- votesThisRound=[];
- clue='';
- secretId=null;
- selected=null;
- round=1;
- storyteller=Math.floor(Math.random()*players.length);
- phase='story';
- gameStarted=true;
- onlineStarted=true;
- render();
 }
 
 function render(){
@@ -2292,6 +2244,282 @@ function nextRound(){
  submissions=[];
  render();
 }
+
+/* ===== ONLINE MULTIPLAYER ADAPTER ===== */
+let mpLocalPlayerIndex = -1;
+let mpRoundActionLock = false;
+let mpStateVersion = 0;
+
+function mpIsHuman(i){ return !!players[i] && !players[i].isBot; }
+function mpHumanPlayers(excludeStoryteller=true){
+  return players.map((p,i)=>i).filter(i=>mpIsHuman(i) && (!excludeStoryteller || i!==storyteller));
+}
+function mpAllHumanReady(map){
+  return mpHumanPlayers(true).every(i=>Object.prototype.hasOwnProperty.call(map,i));
+}
+function mpCardById(id){ return deck.find(c=>c.id===id); }
+function mpPlayerIndexByOnlineId(id){ return players.findIndex(p=>p.onlineId===id); }
+function mpPublicState(){
+  return {
+    version:++mpStateVersion,
+    round, storyteller, phase, submissions, votesThisRound, clue, secretId,
+    availableIds: availableIds.slice(),
+    selectedRoundMode, selectedBotCount,
+    players: players.map(p=>({
+      name:p.name, isBot:!!p.isBot, onlineId:p.onlineId||null,
+      score:p.score||0, playedRounds:p.playedRounds||0, form:Array.isArray(p.form)?p.form.slice():[],
+      hand:(p.hand||[]).map(c=>c.id)
+    }))
+  };
+}
+function mpSync(){
+  if(!onlineIsHost || !onlineSocket || onlineSocket.readyState!==WebSocket.OPEN || !gameStarted) return;
+  sendOnline({type:'gameState',state:mpPublicState()});
+}
+function mpApplyState(s){
+  if(!s || !Array.isArray(s.players)) return;
+  round=Number(s.round)||1;
+  storyteller=Number(s.storyteller)||0;
+  phase=s.phase||'story';
+  submissions=Array.isArray(s.submissions)?s.submissions.slice():[];
+  votesThisRound=Array.isArray(s.votesThisRound)?s.votesThisRound.slice():[];
+  clue=s.clue||'';
+  secretId=s.secretId==null?null:s.secretId;
+  availableIds=Array.isArray(s.availableIds)?s.availableIds.slice():[];
+  selectedRoundMode=s.selectedRoundMode||selectedRoundMode;
+  selectedBotCount=Number(s.selectedBotCount)||selectedBotCount;
+  players=s.players.map(p=>({
+    name:p.name, isBot:!!p.isBot, onlineId:p.onlineId||null,
+    score:Number(p.score)||0, playedRounds:Number(p.playedRounds)||0,
+    form:Array.isArray(p.form)?p.form.slice():[],
+    hand:(p.hand||[]).map(mpCardById).filter(Boolean)
+  }));
+  mpLocalPlayerIndex=players.findIndex(p=>p.onlineId===onlinePlayerId);
+  gameStarted=true;
+  onlineStarted=true;
+  onlineScreen='room';
+  render();
+}
+function mpInitGame(startMsg){
+  if(!onlineIsHost) return;
+  const humans=Array.isArray(startMsg.players)?startMsg.players:onlinePlayers;
+  const botCount=Math.max(3,Math.min(7,Number(startMsg.botCount)||3));
+  selectedBotCount=botCount;
+  selectedRoundMode=startMsg.roundMode||'8';
+  selectedBots=randomBots(botCount);
+  players=humans.map((p,i)=>({name:p.name,isBot:false,onlineId:p.id,score:0,playedRounds:0,form:[],hand:[]}));
+  selectedBots.forEach(name=>players.push({name,isBot:true,onlineId:null,score:0,playedRounds:0,form:[],hand:[]}));
+  availableIds=deck.map(c=>c.id);
+  players.forEach(p=>p.hand=draw(6));
+  round=1;
+  storyteller=Math.floor(Math.random()*players.length);
+  submissions=[]; votesThisRound=[]; clue=''; secretId=null; phase='story'; selected=null;
+  gameStarted=true; onlineStarted=true;
+  mpLocalPlayerIndex=players.findIndex(p=>p.onlineId===onlinePlayerId);
+  mpStartRoundIfBot();
+  mpSync();
+  render();
+}
+function mpStartRoundIfBot(){
+  if(!gameStarted || phase!=='story') return;
+  if(players[storyteller]?.isBot){
+    const sp=players[storyteller];
+    const secret=chooseBotSecret(sp);
+    if(!secret) return;
+    secretId=secret.id;
+    clue=botClue(secret,sp.name);
+    submissions=[{id:secret.id,owner:storyteller}];
+    players.forEach((p,i)=>{
+      if(i!==storyteller && p.isBot){
+        const d=chooseDecoy(p,clue);
+        if(d) submissions.push({id:d.id,owner:i});
+      }
+    });
+    const humans=mpHumanPlayers(true);
+    if(humans.length){ phase='decoy'; }
+    else { submissions=shuffle(submissions); phase='vote'; mpAddBotVotesIfReady(); }
+  }
+}
+function mpAddBotVotesIfReady(){
+  if(phase!=='vote') return;
+  const humanVoters=mpHumanPlayers(true);
+  const humanVotes=votesThisRound.filter(v=>humanVoters.includes(v.voter));
+  if(humanVotes.length<humanVoters.length) return;
+  const votes=humanVotes.slice();
+  players.forEach((p,idx)=>{
+    if(!p.isBot || idx===storyteller) return;
+    const options=submissions.filter(s=>s.owner!==idx).map(s=>({s,j:submissions.indexOf(s),sc:scoreCard(mpCardById(s.id),clue)}));
+    const best=options.sort((a,b)=>b.sc-a.sc)[0];
+    if(best) votes.push({voter:idx,card:best.j});
+  });
+  calculate(votes);
+  mpSync();
+  render();
+}
+function mpSendAction(action,payload={}){
+  if(onlineIsHost){ mpHandleAction(onlinePlayerId,action,payload); }
+  else sendOnline({type:'gameAction',action,payload});
+}
+function mpHandleAction(actorOnlineId,action,payload){
+  if(!onlineIsHost || !gameStarted) return;
+  const actor=mpPlayerIndexByOnlineId(actorOnlineId);
+  if(actor<0) return;
+  if(action==='selectSecret') return mpSelectSecret(actor,Number(payload.index));
+  if(action==='submitClue') return mpSubmitClue(actor,String(payload.clue||''));
+  if(action==='chooseDecoy') return mpChooseDecoy(actor,Number(payload.index));
+  if(action==='vote') return mpVote(actor,Number(payload.index));
+  if(action==='nextRound') return mpNextRound();
+  if(action==='restart') return mpRestartToLobby();
+}
+function mpSelectSecret(actor,i){
+  if(actor!==storyteller || !mpIsHuman(actor) || phase!=='story') return;
+  const c=players[actor].hand[i]; if(!c)return;
+  selected=i; secretId=c.id; phase='clue';
+  mpSync(); render();
+}
+function mpSubmitClue(actor,text){
+  if(actor!==storyteller || !mpIsHuman(actor) || phase!=='clue' || !text.trim()) return;
+  clue=text.trim();
+  submissions=[{id:secretId,owner:storyteller}];
+  players.forEach((p,i)=>{
+    if(i!==storyteller && p.isBot){const d=chooseDecoy(p,clue); if(d) submissions.push({id:d.id,owner:i});}
+  });
+  const humans=mpHumanPlayers(true);
+  if(humans.length){ phase='decoy'; }
+  else { submissions=shuffle(submissions); phase='vote'; }
+  mpSync(); render();
+  if(phase==='vote') mpAddBotVotesIfReady();
+}
+function mpChooseDecoy(actor,i){
+  if(actor===storyteller || !mpIsHuman(actor) || phase!=='decoy') return;
+  if(submissions.some(s=>s.owner===actor)) return;
+  const c=players[actor].hand[i]; if(!c)return;
+  if(submissions.some(s=>s.id===c.id)) return;
+  submissions.push({id:c.id,owner:actor});
+  const humans=mpHumanPlayers(true);
+  if(humans.every(idx=>submissions.some(s=>s.owner===idx))){
+    submissions=shuffle(submissions); phase='vote';
+  }
+  mpSync(); render();
+  if(phase==='vote') mpAddBotVotesIfReady();
+}
+function mpVote(actor,i){
+  if(actor===storyteller || !mpIsHuman(actor) || phase!=='vote') return;
+  if(!submissions[i] || submissions[i].owner===actor) return;
+  if(votesThisRound.some(v=>v.voter===actor)) return;
+  votesThisRound.push({voter:actor,card:i});
+  mpAddBotVotesIfReady();
+  if(phase==='vote'){mpSync();render();}
+}
+function mpNextRound(){
+  if(!onlineIsHost || phase!=='result') return;
+  const fixedLimit=selectedRoundMode!=='end'?Number(selectedRoundMode):Infinity;
+  if(round>=fixedLimit || availableIds.length<players.length){phase='final';mpSync();render();return;}
+  submissions.forEach(sub=>{const owner=players[sub.owner]; if(owner) owner.hand=owner.hand.filter(c=>c.id!==sub.id);});
+  players.forEach(p=>{const c=draw(1)[0];if(c)p.hand.push(c);});
+  storyteller=(storyteller+1)%players.length;
+  round++; phase='story'; secretId=null; clue=''; submissions=[]; votesThisRound=[]; selected=null;
+  mpStartRoundIfBot(); mpSync(); render();
+}
+function mpRestartToLobby(){
+  if(!onlineIsHost)return;
+  sendOnline({type:'resetGame'});
+}
+
+function selectSecret(i){ mpSendAction('selectSecret',{index:i}); }
+function submitClue(){ const v=document.getElementById('clueInput')?.value.trim()||''; mpSendAction('submitClue',{clue:v}); }
+function chooseHumanDecoy(i){ mpSendAction('chooseDecoy',{index:i}); }
+function vote(i){ mpSendAction('vote',{index:i}); }
+function nextRound(){ mpSendAction('nextRound'); }
+function restartGame(){ mpSendAction('restart'); }
+function showFinalTable(){ phase='final'; if(onlineIsHost)mpSync(); render(); }
+
+function renderStory(){
+  const el=document.getElementById('storyBody');
+  const me=mpLocalPlayerIndex;
+  const myTurn=me>=0 && me===storyteller;
+  const myHuman=me>=0 && mpIsHuman(me);
+  document.getElementById('storyTitle').textContent=myTurn?'Твоя ассоциация':`${players[storyteller]?.name||'Игрок'} загадывает`;
+  if(phase==='story'){
+    if(myTurn && myHuman){
+      el.innerHTML=`<div class="muted">Выбери одного футболиста из своей руки. Он будет секретной картой.</div><div class="hand">${players[me].hand.map((c,i)=>card(c,`selectSecret(${i})`)).join('')}</div>`;
+    }else{
+      el.innerHTML=`<div class="notice">${players[storyteller]?.isBot?'Бот-ведущий выбирает карту и ассоциацию…':'Ведущий выбирает карту и придумывает ассоциацию…'}</div>`;
+    }
+  }else if(phase==='clue'){
+    if(myTurn && myHuman) el.innerHTML=`<div class="notice">Выбери ассоциацию для выбранной карты.</div><input id="clueInput" placeholder="Например: «лучший удар в мировом футболе»"><button onclick="submitClue()">Загадать</button>`;
+    else el.innerHTML=`<div class="notice">Ведущий придумывает ассоциацию…</div>`;
+  }else if(phase==='decoy'){
+    if(!myTurn && myHuman && !submissions.some(s=>s.owner===me)){
+      el.innerHTML=`<div class="notice"><b>${clue}</b><br><span class="muted">Выбери из своей руки футболиста-обманку.</span></div><div class="hand">${players[me].hand.map((c,i)=>card(c,`chooseHumanDecoy(${i})`,submissions.some(s=>s.id===c.id))).join('')}</div>`;
+    }else{
+      const chosen=mpHumanPlayers(true).filter(i=>submissions.some(s=>s.owner===i)).length;
+      const total=mpHumanPlayers(true).length;
+      el.innerHTML=`<div class="notice"><b>${clue}</b><br>Обманки выбраны: ${chosen} из ${total}. Ждём остальных игроков…</div>`;
+    }
+  }else if(phase==='vote'){
+    if(myTurn){
+      el.innerHTML=`<div class="notice"><b>Ассоциация:</b> ${clue}<br>Ты ведущий — не голосуй. Остальные игроки голосуют.</div><div class="submitted">${submissions.map(s=>card(mpCardById(s.id),'',true,s.owner===me)).join('')}</div>`;
+    }else if(myHuman){
+      const already=votesThisRound.some(v=>v.voter===me);
+      el.innerHTML=`<div class="notice"><b>Ассоциация:</b> ${clue}<br><span class="muted">${already?'Твой голос принят. Ждём остальных игроков.':'Выбери карту, которую загадал ведущий. Свою карту выбирать нельзя.'}</span></div><div class="submitted">${submissions.map((s,i)=>{const own=s.owner===me;return card(mpCardById(s.id),already||own?'':`vote(${i})`,already||own,own)}).join('')}</div>`;
+    }else{
+      el.innerHTML=`<div class="notice"><b>Ассоциация:</b> ${clue}<br>Ты наблюдаешь за игрой. Ждём голосов игроков.</div><div class="submitted">${submissions.map(s=>card(mpCardById(s.id),'',true,s.owner===me)).join('')}</div>`;
+    }
+  }else if(phase==='result'){
+    const correct=submissions.findIndex(s=>s.id===secretId);
+    const voteNames={};
+    votesThisRound.forEach(v=>{(voteNames[v.card]||(voteNames[v.card]=[])).push(players[v.voter]?.name||'Игрок');});
+    const cardsHtml=submissions.map((s,i)=>{const c=mpCardById(s.id),isSecret=s.id===secretId,voters=voteNames[i]||[];return `<div class="result-card ${isSecret?'secret-card':''}">${card(c,'',true)}<div class="result-card-label">${isSecret?'★ ЗАГАДАННАЯ КАРТА':'КАРТА-ОБМАНКА'}</div><div class="result-owner">${isSecret?'Загадывал':'Предложил'}: <b>${players[s.owner]?.name||''}</b></div><div class="result-votes"><b>Голосовали:</b> ${voters.length?voters.map(n=>`<span class="vote-chip">${n}</span>`).join(''):'<span class="muted">никто</span>'}</div></div>`;}).join('');
+    const fixedLimit=selectedRoundMode!=='end'?Number(selectedRoundMode):Infinity;
+    const isFinal=round>=fixedLimit || availableIds.length<players.length;
+    el.innerHTML=`<div class="notice"><b>Ассоциация:</b> ${clue}<br><b>Правильную карту выбрали:</b> ${votesThisRound.filter(v=>submissions[v.card]?.id===secretId).length} из ${players.length-1}</div><div class="result-grid">${cardsHtml}</div>${isFinal?'<button onclick="showFinalTable()">Показать итоговую таблицу →</button>':'<button onclick="nextRound()">Следующий раунд →</button>'}`;
+  }
+}
+
+function connectOnline(){
+  if(onlineSocket && (onlineSocket.readyState===WebSocket.OPEN || onlineSocket.readyState===WebSocket.CONNECTING)) return;
+  const proto=location.protocol==='https:'?'wss':'ws';
+  try{onlineSocket=new WebSocket(`${proto}://${location.host}`);}catch(e){alert('Не удалось подключиться к серверу.');return;}
+  onlineSocket.addEventListener('open',()=>{onlineConnected=true;render();});
+  onlineSocket.addEventListener('message',(event)=>{
+    let m;try{m=JSON.parse(event.data)}catch{return;}
+    if(m.type==='connected'){onlinePlayerId=m.playerId||'';return;}
+    if(m.type==='lobby'){
+      onlineRoomCode=m.roomCode||onlineRoomCode;onlinePlayers=Array.isArray(m.players)?m.players:[];
+      onlineIsHost=!!onlinePlayers.find(p=>p.id===onlinePlayerId)?.isHost;onlineScreen='room';onlineStarted=false;render();return;
+    }
+    if(m.type==='gameStarting'){
+      onlineStarted=true;onlinePlayers=Array.isArray(m.players)?m.players:onlinePlayers;
+      selectedBotCount=Number(m.botCount)||selectedBotCount;selectedRoundMode=m.roundMode||selectedRoundMode;
+      if(onlineIsHost) mpInitGame(m); else {gameStarted=false;render();}
+      return;
+    }
+    if(m.type==='gameAction'){
+      if(onlineIsHost) mpHandleAction(m.fromId,m.action,m.payload||{});
+      return;
+    }
+    if(m.type==='gameState'){
+      mpApplyState(m.state);return;
+    }
+    if(m.type==='gameReset'){
+      gameStarted=false;onlineStarted=false;players=[];submissions=[];votesThisRound=[];clue='';secretId=null;phase='story';selected=null;round=1;storyteller=0;mpLocalPlayerIndex=-1;onlineScreen='room';render();return;
+    }
+    if(m.type==='error'){alert(m.message||'Ошибка подключения.');return;}
+    if(m.type==='leftRoom'){onlineRoomCode='';onlineIsHost=false;onlinePlayers=[];onlineStarted=false;gameStarted=false;onlineScreen='home';render();return;}
+  });
+  onlineSocket.addEventListener('close',()=>{onlineConnected=false;onlineSocket=null;if(onlineScreen==='room'){const s=document.getElementById('roomStatus');if(s)s.innerHTML='<span class="danger">Соединение с сервером потеряно. Обнови страницу и подключись снова.</span>';}});
+  onlineSocket.addEventListener('error',()=>{onlineConnected=false;});
+}
+
+function startGame(){
+  if(!nicknameReady||!playerNickname){alert('Сначала задай никнейм.');return;}
+  if(!onlineRoomCode||!onlineIsHost){alert('Только создатель комнаты может запустить игру.');return;}
+  const bots=Math.max(3,Math.min(7,Number(selectedBotCount)||3));
+  const rounds=selectedRoundMode||'8';
+  if(sendOnline({type:'setSettings',botCount:bots,roundMode:rounds}) && sendOnline({type:'startGame'})){onlineStarted=true;const s=document.getElementById('roomStatus');if(s)s.innerHTML='<b>Игра запускается…</b>';}
+}
+
 render();
 connectOnline();
 </script>
