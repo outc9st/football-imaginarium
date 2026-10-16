@@ -1,5 +1,12 @@
-# Football Imaginarium Online
+# Football Imaginarium Online v26
 
-Online lobby + WebSocket prototype. This version fixes the start-game transition: the host's settings and bot roster are sent to all clients, and the existing v25 game logic is initialized when the server broadcasts `gameStarting`.
+Multiplayer prototype with a shared game state.
 
-The next development step is full server-authoritative synchronization of turns, cards, clues, votes and scores between human players.
+- Render hosts the Node.js + WebSocket server.
+- The room creator is the authoritative game host.
+- Human players send actions to the host.
+- The host runs bot logic, scoring, turns and card dealing.
+- After every action the host broadcasts one synchronized game state to everyone.
+- The lobby supports 1–8 human players plus 3–7 bots.
+
+This is a host-authoritative prototype; the next hardening step would be moving the authoritative game logic entirely to the server.

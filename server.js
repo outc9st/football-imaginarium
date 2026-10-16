@@ -8,34 +8,36 @@ const PUBLIC = path.join(__dirname, 'public');
 const rooms = new Map();
 
 function roomCode(){
-  const c='ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  const chars='ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   let x;
-  do{x=Array.from({length:5},()=>c[Math.floor(Math.random()*c.length)]).join('')}while(rooms.has(x));
+  do{x=Array.from({length:5},()=>chars[Math.floor(Math.random()*chars.length)]).join('')}while(rooms.has(x));
   return x;
 }
 function cleanName(n){return String(n||'').trim().replace(/\s+/g,' ').slice(0,24)||'Игрок'}
 function send(ws,p){if(ws.readyState===1)ws.send(JSON.stringify(p))}
 function broadcast(r,p){for(const x of r.players.values())send(x.ws,p)}
-function state(r){
-  return {
-    type:'lobby',
-    roomCode:r.code,
-    hostId:r.hostId,
-    settings:r.settings,
-    players:[...r.players.values()].map(p=>({id:p.id,name:p.name,isHost:p.id===r.hostId}))
-  };
-}
+function playerList(r){return [...r.players.values()].map(p=>({id:p.id,name:p.name,isHost:p.id===r.hostId}))}
+function lobbyState(r){return {type:'lobby',roomCode:r.code,hostId:r.hostId,started:r.started,botCount:r.botCount,roundMode:r.roundMode,players:playerList(r)}}
+
 function leave(p){
   if(!p.roomCode)return;
   const r=rooms.get(p.roomCode);
-  if(!r)return;
+  if(!r){p.roomCode=null;return;}
   r.players.delete(p.id);
-  if(r.hostId===p.id){
-    const n=r.players.values().next().value;
-    r.hostId=n?n.id:null;
+  const wasHost=r.hostId===p.id;
+  if(wasHost){
+    if(r.started){
+      r.started=false;
+      r.gameState=null;
+      r.hostId=null;
+      broadcast(r,{type:'gameReset',reason:'Создатель комнаты отключился.'});
+    }else{
+      const n=r.players.values().next().value;
+      r.hostId=n?n.id:null;
+    }
   }
   if(!r.players.size)rooms.delete(r.code);
-  else broadcast(r,state(r));
+  else broadcast(r,lobbyState(r));
   p.roomCode=null;
 }
 
@@ -47,8 +49,7 @@ const server=http.createServer((req,res)=>{
   fs.readFile(f,(e,d)=>{
     if(e){res.writeHead(404);return res.end('Not found')}
     const t={'.html':'text/html; charset=utf-8','.js':'text/javascript; charset=utf-8','.css':'text/css; charset=utf-8'}[path.extname(f)]||'application/octet-stream';
-    res.writeHead(200,{'Content-Type':t});
-    res.end(d);
+    res.writeHead(200,{'Content-Type':t,'Cache-Control':'no-cache'});res.end(d);
   });
 });
 
@@ -58,23 +59,15 @@ wss.on('connection',ws=>{
   send(ws,{type:'connected',playerId:p.id});
 
   ws.on('message',raw=>{
-    let m;
-    try{m=JSON.parse(raw)}catch{return send(ws,{type:'error',message:'Некорректный запрос.'})}
+    let m;try{m=JSON.parse(raw)}catch{return send(ws,{type:'error',message:'Некорректный запрос.'})}
 
     if(m.type==='createRoom'){
       leave(p);
       const code=roomCode();
-      const r={
-        code,
-        hostId:p.id,
-        players:new Map,
-        settings:{botCount:3,roundMode:'8',botNames:[]}
-      };
+      const r={code,hostId:p.id,players:new Map(),started:false,botCount:3,roundMode:'8',gameState:null};
       rooms.set(code,r);
-      p.name=cleanName(m.name);
-      p.roomCode=code;
-      r.players.set(p.id,p);
-      return send(ws,state(r));
+      p.name=cleanName(m.name);p.roomCode=code;r.players.set(p.id,p);
+      return broadcast(r,lobbyState(r));
     }
 
     if(m.type==='joinRoom'){
@@ -82,41 +75,53 @@ wss.on('connection',ws=>{
       const code=String(m.roomCode||'').trim().toUpperCase();
       const r=rooms.get(code);
       if(!r)return send(ws,{type:'error',message:'Комната не найдена.'});
+      if(r.started)return send(ws,{type:'error',message:'Игра уже началась. Подключиться к ней сейчас нельзя.'});
       if(r.players.size>=8)return send(ws,{type:'error',message:'Комната заполнена.'});
-      if(r.started)return send(ws,{type:'error',message:'Игра уже началась.'});
-      p.name=cleanName(m.name);
-      p.roomCode=code;
-      r.players.set(p.id,p);
-      return broadcast(r,state(r));
-    }
-
-    if(m.type==='setSettings'){
-      const r=rooms.get(p.roomCode);
-      if(!r)return;
-      if(r.hostId!==p.id)return send(ws,{type:'error',message:'Только создатель комнаты может менять настройки.'});
-      const botCount=Math.max(3,Math.min(7,Number(m.botCount)||3));
-      const roundMode=String(m.roundMode||'8');
-      const botNames=Array.isArray(m.botNames)?m.botNames.slice(0,botCount).map(cleanName):[];
-      r.settings={botCount,roundMode,botNames};
-      return broadcast(r,state(r));
-    }
-
-    if(m.type==='startGame'){
-      const r=rooms.get(p.roomCode);
-      if(!r)return;
-      if(r.hostId!==p.id)return send(ws,{type:'error',message:'Только создатель комнаты может начать игру.'});
-      if(r.players.size<1)return send(ws,{type:'error',message:'В комнате нет игроков.'});
-      r.started=true;
-      return broadcast(r,{
-        type:'gameStarting',
-        players:[...r.players.values()].map(x=>({id:x.id,name:x.name})),
-        settings:r.settings
-      });
+      p.name=cleanName(m.name);p.roomCode=code;r.players.set(p.id,p);
+      return broadcast(r,lobbyState(r));
     }
 
     if(m.type==='leaveRoom'){
-      leave(p);
-      return send(ws,{type:'leftRoom'});
+      leave(p);return send(ws,{type:'leftRoom'});
+    }
+
+    const r=p.roomCode?rooms.get(p.roomCode):null;
+    if(!r)return;
+
+    if(m.type==='setSettings'){
+      if(r.hostId!==p.id)return send(ws,{type:'error',message:'Только создатель комнаты может менять настройки.'});
+      if(r.started)return;
+      r.botCount=Math.max(3,Math.min(7,Number(m.botCount)||3));
+      r.roundMode=String(m.roundMode||'8');
+      return broadcast(r,lobbyState(r));
+    }
+
+    if(m.type==='startGame'){
+      if(r.hostId!==p.id)return send(ws,{type:'error',message:'Только создатель комнаты может начать игру.'});
+      if(r.started)return;
+      r.started=true;
+      r.gameState=null;
+      return broadcast(r,{type:'gameStarting',players:playerList(r),botCount:r.botCount,roundMode:r.roundMode});
+    }
+
+    if(m.type==='gameAction'){
+      if(!r.started)return;
+      // Только авторитетный хост исполняет действия. Сервер лишь доставляет
+      // действия от остальных игроков хосту, чтобы состояние было единым.
+      if(p.id===r.hostId)return;
+      return send([...r.players.values()].find(x=>x.id===r.hostId)?.ws,{type:'gameAction',fromId:p.id,action:m.action,payload:m.payload||{}});
+    }
+
+    if(m.type==='gameState'){
+      if(!r.started || r.hostId!==p.id)return;
+      r.gameState=m.state||null;
+      return broadcast(r,{type:'gameState',state:r.gameState});
+    }
+
+    if(m.type==='resetGame'){
+      if(r.hostId!==p.id)return send(ws,{type:'error',message:'Только создатель комнаты может вернуть игру в лобби.'});
+      r.started=false;r.gameState=null;
+      return broadcast(r,{type:'gameReset'});
     }
   });
 
