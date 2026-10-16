@@ -309,10 +309,10 @@ function connectOnline(){
    if(m.type==='gameStarting'){
      onlineStarted=true;
      onlinePlayers=Array.isArray(m.players)?m.players:onlinePlayers;
-     const status=document.getElementById('roomStatus');
-     if(status) status.innerHTML='<b>Игра запускается…</b>';
-     const btn=document.querySelector('#roomPanel .start-game-btn');
-     if(btn) btn.disabled=true;
+     selectedBotCount=Math.max(3,Math.min(7,Number(m.settings?.botCount)||3));
+     selectedRoundMode=m.settings?.roundMode || selectedRoundMode || '8';
+     selectedBots=Array.isArray(m.settings?.botNames) ? m.settings.botNames.slice() : randomBots(selectedBotCount);
+     startLocalGameFromOnline();
      return;
    }
    if(m.type==='error'){
@@ -399,11 +399,59 @@ function startGame(){
  if(!onlineRoomCode || !onlineIsHost){alert('Только создатель комнаты может запустить игру.');return;}
  const bots=Math.max(3,Math.min(7,Number(selectedBotCount)||3));
  const rounds=selectedRoundMode||'8';
- if(sendOnline({type:'setSettings',botCount:bots,roundMode:rounds}) && sendOnline({type:'startGame'})){
+ // Бросаем состав ботов один раз у ведущего и передаём его серверу,
+ // чтобы у всех участников игры был одинаковый состав.
+ const botNames=randomBots(bots);
+ selectedBots=botNames.slice();
+ if(sendOnline({type:'setSettings',botCount:bots,roundMode:rounds,botNames}) && sendOnline({type:'startGame'})){
    onlineStarted=true;
    const status=document.getElementById('roomStatus');
    if(status) status.innerHTML='<b>Игра запускается…</b>';
  }
+}
+
+function startLocalGameFromOnline(){
+ // На этом этапе онлайн-слой передаёт состав и настройки в существующую
+ // игровую логику v25. Это убирает зависание лобби и запускает саму игру.
+ // Полная синхронизация ходов между несколькими людьми будет следующим этапом.
+ const humans=Array.isArray(onlinePlayers)?onlinePlayers.slice():[];
+ const meIndex=Math.max(0,humans.findIndex(p=>p.id===onlinePlayerId));
+ const me=humans.splice(meIndex,1)[0] || {id:onlinePlayerId,name:playerNickname};
+ const humanPlayers=[me,...humans];
+ const bots=(Array.isArray(selectedBots)&&selectedBots.length?selectedBots:randomBots(selectedBotCount)).slice(0,selectedBotCount);
+ selectedBots=bots.slice();
+ players=humanPlayers.map((p,i)=>({
+   id:p.id || ('online-'+i),
+   name:p.name || 'Игрок',
+   score:0,
+   form:[],
+   playedRounds:0,
+   hand:[],
+   isBot:false
+ }));
+ bots.forEach((name,i)=>players.push({
+   id:'bot-'+i,
+   name,
+   score:0,
+   form:[],
+   playedRounds:0,
+   hand:[],
+   isBot:true
+ }));
+ // Для локальной игровой логики текущий клиент всегда является players[0].
+ availableIds=deck.map(c=>c.id);
+ players.forEach(p=>p.hand=draw(6));
+ submissions=[];
+ votesThisRound=[];
+ clue='';
+ secretId=null;
+ selected=null;
+ round=1;
+ storyteller=Math.floor(Math.random()*players.length);
+ phase='story';
+ gameStarted=true;
+ onlineStarted=true;
+ render();
 }
 
 function render(){
