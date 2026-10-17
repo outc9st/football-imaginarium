@@ -94,9 +94,7 @@ table{width:100%;border-collapse:collapse}
     <div class="room-settings">
       <h3 style="margin:0 0 10px">Настройки игры</h3>
       <label>Количество ботов
-        <select id="botCount" onchange="selectedBotCount=Number(this.value); updateRoundOptions()">
-          <option value="3" selected>3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option>
-        </select>
+        <select id="botCount" onchange="selectedBotCount=Number(this.value); updateRoundOptions()"></select>
       </label>
       <label>Количество раундов
         <select id="roundMode" onchange="selectedRoundMode=this.value"></select>
@@ -251,8 +249,17 @@ function draw(n){
 availableIds = deck.map(c=>c.id);
 players.forEach(p=>p.hand=draw(6));
 
+function humanPlayerCount(){
+  return Math.max(1, onlinePlayers.length || 1);
+}
+
+function botBounds(){
+  const humans=humanPlayerCount();
+  return {min:Math.max(0,4-humans), max:Math.max(0,8-humans)};
+}
+
 function getRoundOptions(){
-  const totalPlayers = Math.max(4, Number(selectedBotCount) + 1);
+  const totalPlayers = Math.max(4, Math.min(8, humanPlayerCount() + Number(selectedBotCount || 0)));
   if(totalPlayers===4) return [{value:"8",label:"8"},{value:"16",label:"16"},{value:"end",label:"Все карты"}];
   if(totalPlayers===5) return [{value:"10",label:"10"},{value:"20",label:"20"},{value:"end",label:"Все карты"}];
   if(totalPlayers===6) return [{value:"12",label:"12"},{value:"end",label:"Все карты"}];
@@ -260,7 +267,20 @@ function getRoundOptions(){
   return [{value:"end",label:"Все карты"}];
 }
 
+function updateBotOptions(){
+ const select=document.getElementById("botCount");
+ if(!select) return;
+ const bounds=botBounds();
+ let value=Number(selectedBotCount);
+ if(!Number.isFinite(value)) value=bounds.min;
+ value=Math.max(bounds.min,Math.min(bounds.max,value));
+ selectedBotCount=value;
+ select.innerHTML=Array.from({length:bounds.max-bounds.min+1},(_,i)=>bounds.min+i).map(n=>`<option value="${n}">${n}</option>`).join("");
+ select.value=String(value);
+}
+
 function updateRoundOptions(){
+ updateBotOptions();
  const rounds=document.getElementById("roundMode");
  if(!rounds) return;
  const options=getRoundOptions();
@@ -275,7 +295,7 @@ function updateRoundOptions(){
 
 function renderLobby(){
  const select=document.getElementById("botCount");
- if(select) select.value=String(Math.max(3,selectedBotCount));
+ if(select) updateBotOptions();
  const nick=document.getElementById("lobbyNickname");
  if(nick) nick.textContent=playerNickname;
  const input=document.getElementById("nicknameInput");
@@ -435,7 +455,7 @@ function render(){
      if(botSelect) botSelect.disabled=!isHost;
      if(roundSelect) roundSelect.disabled=!isHost;
      const startBtn=document.querySelector('#roomPanel .start-game-btn');
-     if(startBtn){startBtn.disabled=!isHost || onlinePlayers.length<1 || onlineStarted; startBtn.textContent=onlineStarted?'Запуск…':'Начать игру';}
+     if(startBtn){startBtn.disabled=!isHost || (onlinePlayers.length + selectedBotCount)<4 || onlinePlayers.length>8 || onlineStarted; startBtn.textContent=onlineStarted?'Запуск…':'Начать игру';}
      renderLobby();
    }
    return;
@@ -2287,7 +2307,7 @@ function mpApplyState(s){
   secretId=s.secretId==null?null:s.secretId;
   availableIds=Array.isArray(s.availableIds)?s.availableIds.slice():[];
   selectedRoundMode=s.selectedRoundMode||selectedRoundMode;
-  selectedBotCount=Number(s.selectedBotCount)||selectedBotCount;
+  if(Number.isFinite(Number(s.selectedBotCount))) selectedBotCount=Number(s.selectedBotCount);
   players=s.players.map(p=>({
     name:p.name, isBot:!!p.isBot, onlineId:p.onlineId||null,
     score:Number(p.score)||0, playedRounds:Number(p.playedRounds)||0,
@@ -2303,7 +2323,8 @@ function mpApplyState(s){
 function mpInitGame(startMsg){
   if(!onlineIsHost) return;
   const humans=Array.isArray(startMsg.players)?startMsg.players:onlinePlayers;
-  const botCount=Math.max(3,Math.min(7,Number(startMsg.botCount)||3));
+  const rawBotCount=Number(startMsg.botCount);
+  const botCount=Math.max(0,Math.min(7,Number.isFinite(rawBotCount)?rawBotCount:3));
   selectedBotCount=botCount;
   selectedRoundMode=startMsg.roundMode||'8';
   selectedBots=randomBots(botCount);
@@ -2491,7 +2512,7 @@ function connectOnline(){
     }
     if(m.type==='gameStarting'){
       onlineStarted=true;onlinePlayers=Array.isArray(m.players)?m.players:onlinePlayers;
-      selectedBotCount=Number(m.botCount)||selectedBotCount;selectedRoundMode=m.roundMode||selectedRoundMode;
+      if(Number.isFinite(Number(m.botCount))) selectedBotCount=Number(m.botCount);selectedRoundMode=m.roundMode||selectedRoundMode;
       if(onlineIsHost) mpInitGame(m); else {gameStarted=false;render();}
       return;
     }
@@ -2515,8 +2536,13 @@ function connectOnline(){
 function startGame(){
   if(!nicknameReady||!playerNickname){alert('Сначала задай никнейм.');return;}
   if(!onlineRoomCode||!onlineIsHost){alert('Только создатель комнаты может запустить игру.');return;}
-  const bots=Math.max(3,Math.min(7,Number(selectedBotCount)||3));
-  const rounds=selectedRoundMode||'8';
+  const bounds=botBounds();
+  const bots=Math.max(bounds.min,Math.min(bounds.max,Number(selectedBotCount)||bounds.min));
+  const totalPlayers=humanPlayerCount()+bots;
+  if(totalPlayers<4 || totalPlayers>8){alert('Для начала игры нужно от 4 до 8 игроков всего.');return;}
+  selectedBotCount=bots;
+  updateRoundOptions();
+  const rounds=selectedRoundMode||'end';
   if(sendOnline({type:'setSettings',botCount:bots,roundMode:rounds}) && sendOnline({type:'startGame'})){onlineStarted=true;const s=document.getElementById('roomStatus');if(s)s.innerHTML='<b>Игра запускается…</b>';}
 }
 
