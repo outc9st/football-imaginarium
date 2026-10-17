@@ -17,7 +17,10 @@ function cleanName(n){return String(n||'').trim().replace(/\s+/g,' ').slice(0,24
 function send(ws,p){if(ws.readyState===1)ws.send(JSON.stringify(p))}
 function broadcast(r,p){for(const x of r.players.values())send(x.ws,p)}
 function playerList(r){return [...r.players.values()].map(p=>({id:p.id,name:p.name,isHost:p.id===r.hostId}))}
-function lobbyState(r){return {type:'lobby',roomCode:r.code,hostId:r.hostId,started:r.started,botCount:r.botCount,roundMode:r.roundMode,players:playerList(r)}}
+function clampBotCount(r,n){const humans=r.players.size;const min=Math.max(0,4-humans);const max=Math.max(0,8-humans);return Math.max(min,Math.min(max,Number.isFinite(Number(n))?Number(n):min))}
+function roundOptions(total){if(total===4)return ['8','16','end'];if(total===5)return ['10','20','end'];if(total===6)return ['12','end'];if(total===7)return ['14','end'];return ['end']}
+function normalizeRoomSettings(r){r.botCount=clampBotCount(r,r.botCount);const total=r.players.size+r.botCount;const opts=roundOptions(Math.max(4,Math.min(8,total)));if(!opts.includes(String(r.roundMode)))r.roundMode=opts[0]}
+function lobbyState(r){normalizeRoomSettings(r);return {type:'lobby',roomCode:r.code,hostId:r.hostId,started:r.started,botCount:r.botCount,roundMode:r.roundMode,players:playerList(r)}}
 
 function leave(p){
   if(!p.roomCode)return;
@@ -91,14 +94,18 @@ wss.on('connection',ws=>{
     if(m.type==='setSettings'){
       if(r.hostId!==p.id)return send(ws,{type:'error',message:'Только создатель комнаты может менять настройки.'});
       if(r.started)return;
-      r.botCount=Math.max(3,Math.min(7,Number(m.botCount)||3));
-      r.roundMode=String(m.roundMode||'8');
+      r.botCount=clampBotCount(r,m.botCount);
+      r.roundMode=String(m.roundMode||'end');
+      normalizeRoomSettings(r);
       return broadcast(r,lobbyState(r));
     }
 
     if(m.type==='startGame'){
       if(r.hostId!==p.id)return send(ws,{type:'error',message:'Только создатель комнаты может начать игру.'});
       if(r.started)return;
+      normalizeRoomSettings(r);
+      if(r.players.size+r.botCount<4 || r.players.size+r.botCount>8)return send(ws,{type:'error',message:'Для начала игры нужно от 4 до 8 игроков всего.'});
+      if(!roundOptions(r.players.size+r.botCount).includes(String(r.roundMode)))return send(ws,{type:'error',message:'Недопустимое количество раундов для этого состава.'});
       r.started=true;
       r.gameState=null;
       return broadcast(r,{type:'gameStarting',players:playerList(r),botCount:r.botCount,roundMode:r.roundMode});
