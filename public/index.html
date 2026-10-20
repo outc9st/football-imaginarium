@@ -248,6 +248,11 @@ let pendingBotVote=null;
 let pendingBotClue=null;
 const thinkingLines={decoy:['Подбирают карту-обманку','Ищут подходящую связь','Сравнивают свои карты'],vote:['Сопоставляют ассоциацию с картами','Пытаются понять замысел','Выбирают, кому верить'],clue:['Придумывают ассоциацию','Ищут точный образ','Подбирают хорошую подсказку'],thinking:['Принимают решение','Анализируют варианты','Думают над ходом']};
 function setAiBackgroundStatus(show,text='Боты уже думают…'){const el=document.getElementById('aiBackgroundStatus');const t=document.getElementById('aiBackgroundText');if(!el)return;if(!show){el.classList.remove('show');return;}if(t)t.textContent=text;el.classList.add('show');}
+function thinkingPersonLabel(name){
+  const n=String(name||'').trim();
+  const aliases={'Хосеп':'Пеп','Юрген':'Клопп','Микель':'Артета','Карло':'Анчелотти','Жозе':'Моуринью','Зинедин':'Зидан','Эрик':'Тен Хаг','Луис':'Луис Энрике','Роберто':'Де Дзерби','Ханси':'Флик','Юлиан':'Нагельсманн','Рубен':'Аморим','Антонио':'Конте','Диего':'Симеоне','Томас':'Тухель','Унаи':'Эмери','Маурисио':'Почеттино','Венсан':'Компани','Оле':'Сульшер','Хаби':'Хаби Алонсо'};
+  return aliases[n]||n;
+}
 function setThinking(show,kind='thinking',names=[]){
   const overlay=document.getElementById('thinkingOverlay'); if(!overlay)return;
   if(!show){
@@ -259,9 +264,15 @@ function setThinking(show,kind='thinking',names=[]){
   const title=document.getElementById('thinkingTitle'),sub=document.getElementById('thinkingSub'),people=document.getElementById('thinkingPlayers');
   const safeNames=(Array.isArray(names)?names:[]).filter(Boolean).slice(0,6);
   const list=safeNames.length?safeNames:(players||[]).filter((p,i)=>p?.isBot&&i!==storyteller).map(p=>p.name).slice(0,6);
-  if(title)title.innerHTML='Игроки думают<span class="thinking-dots"><i></i><i></i><i></i></span>';
-  if(people)people.innerHTML=list.map(n=>`<span class="thinking-player"><span class="thinking-dot"></span>${escapeHtml(n)}</span>`).join('');
-  const lines=thinkingLines[kind]||thinkingLines.thinking; let idx=0;
+  const lead=list[0]||'';
+  if(title){
+    if(kind==='clue'&&lead) title.innerHTML=`${escapeHtml(thinkingPersonLabel(lead))} придумывает ассоциацию<span class="thinking-dots"><i></i><i></i><i></i></span>`;
+    else title.innerHTML='Игроки думают<span class="thinking-dots"><i></i><i></i><i></i></span>';
+  }
+  if(people)people.innerHTML=kind==='clue'&&lead
+    ? `<span class="thinking-player thinking-player-main"><span class="thinking-dot"></span>${escapeHtml(thinkingPersonLabel(lead))}</span>`
+    : list.map(n=>`<span class="thinking-player"><span class="thinking-dot"></span>${escapeHtml(n)}</span>`).join('');
+  const lines=kind==='clue'?['Ищет необычную, но честную связь','Подбирает образ, который можно разгадать','Учитывает свой футбольный характер']:((thinkingLines[kind]||thinkingLines.thinking)); let idx=0;
   if(sub)sub.textContent=lines[0]; if(thinkingTimer)clearInterval(thinkingTimer);
   thinkingTimer=setInterval(()=>{idx=(idx+1)%lines.length;if(sub)sub.textContent=lines[idx];},1300); overlay.classList.add('show');
 }
@@ -2851,10 +2862,13 @@ async function mpStartRoundIfBot(){
   if(players[storyteller]?.isBot){
     aiBusy=true; const sp=players[storyteller]; const secret=chooseBotSecret(sp); if(!secret){aiBusy=false;return;}
     secretId=secret.id; submissions=[{id:secret.id,owner:storyteller}]; phase='clueGenerating';
-    setThinking(true,'clue',[sp.name]); if(onlineIsHost)sendOnline({type:'gameThinking',show:true,kind:'clue',names:[sp.name]});
+    setThinking(true,'clue',[sp.name]);
+    setAiBackgroundStatus(true,`${thinkingPersonLabel(sp.name)} придумывает ассоциацию…`);
+    if(onlineIsHost){sendOnline({type:'gameThinking',show:true,kind:'clue',names:[sp.name]});sendOnline({type:'gameAiStatus',show:true,text:`${thinkingPersonLabel(sp.name)} придумывает ассоциацию…`});}
     pendingBotClue=aiGenerateClue(secret,sp.name);
     clue=await pendingBotClue; pendingBotClue=null;
-    aiBusy=false; setThinking(false); if(onlineIsHost)sendOnline({type:'gameThinking',show:false});
+    aiBusy=false; setThinking(false); setAiBackgroundStatus(false);
+    if(onlineIsHost){sendOnline({type:'gameThinking',show:false});sendOnline({type:'gameAiStatus',show:false});}
     const bots=players.map((p,i)=>({p,i})).filter(x=>x.i!==storyteller&&x.p.isBot);
     const entries=bots.map(x=>({botId:String(x.i),coach:x.p.name,options:x.p.hand.map(mpCardById).filter(Boolean)}));
     pendingBotDecoy=prepareBotDecoys(entries,clue);
