@@ -104,7 +104,7 @@ table{width:100%;border-collapse:collapse}
   button{padding:10px 12px;}
 }
 /* AI thinking overlay */
-#thinkingOverlay{position:fixed;inset:0;z-index:100000;display:none;align-items:center;justify-content:center;background:rgba(8,11,17,.58);backdrop-filter:blur(3px);padding:18px;box-sizing:border-box}
+#aiBackgroundStatus{position:fixed;right:18px;bottom:18px;z-index:99990;display:none;align-items:center;gap:9px;background:#181d27;border:1px solid #354052;border-radius:12px;padding:10px 13px;box-shadow:0 12px 35px rgba(0,0,0,.32);font-size:12px;color:#dfe3e8;max-width:min(360px,calc(100vw - 36px));pointer-events:none}#aiBackgroundStatus.show{display:flex}.ai-bg-spinner{width:12px;height:12px;border:2px solid #354052;border-top-color:#65a9ff;border-radius:50%;animation:aiSpin .8s linear infinite;flex:none}@keyframes aiSpin{to{transform:rotate(360deg)}}#thinkingOverlay{position:fixed;inset:0;z-index:100000;display:none;align-items:center;justify-content:center;background:rgba(8,11,17,.58);backdrop-filter:blur(3px);padding:18px;box-sizing:border-box}
 #thinkingOverlay.show{display:flex}
 .thinking-box{width:min(420px,calc(100vw - 36px));background:#181d27;border:1px solid #354052;border-radius:18px;padding:22px 20px;box-shadow:0 18px 60px rgba(0,0,0,.42);text-align:center}
 .thinking-title{font-size:21px;font-weight:800;margin-bottom:8px}
@@ -129,11 +129,11 @@ table{width:100%;border-collapse:collapse}
 
 </head>
 <body>
-<div id="thinkingOverlay" aria-live="polite" aria-busy="true"><div class="thinking-box"><div class="thinking-title" id="thinkingTitle">Игроки думают<span class="thinking-dots"><i></i><i></i><i></i></span></div><div class="thinking-sub" id="thinkingSub">Подбирают лучший вариант</div><div class="thinking-players" id="thinkingPlayers"></div><div class="thinking-wait">Игра не зависла — боты принимают решение</div></div></div>
+<div id="thinkingOverlay" aria-live="polite" aria-busy="true"><div class="thinking-box"><div class="thinking-title" id="thinkingTitle">Игроки думают<span class="thinking-dots"><i></i><i></i><i></i></span></div><div class="thinking-sub" id="thinkingSub">Подбирают лучший вариант</div><div class="thinking-players" id="thinkingPlayers"></div><div class="thinking-wait">Игра не зависла — боты принимают решение</div></div></div><div id="aiBackgroundStatus"><span class="ai-bg-spinner"></span><span id="aiBackgroundText">Боты уже думают…</span></div>
 <div id="aiDebugPanel"><div class="ai-head"><span>🤖 AI TEST — Gemini vs ScoreCard</span><button onclick="toggleAiDebug(false)">Скрыть</button></div><div id="aiDebugBody"><div class="muted">Пока решений нет.</div></div></div>
 
 <div class="app">
-<h1>⚽ Football Imaginarium v31 — Gemini Test v4</h1>
+<h1>⚽ Football Imaginarium v31 — Gemini Test v5</h1>
 <div class="sub">Футбольная версия Имаджинариума — с настоящим чередованием ведущих и персональными ассоциациями.</div>
 
 <div class="panel online-panel" id="onlineHomePanel">
@@ -243,7 +243,11 @@ let aiDebugEntries=[];
 let aiBusy=false;
 let thinkingTimer=null;
 let thinkingStartedAt=0;
-const thinkingLines={decoy:['Подбирают карту-обманку','Ищут подходящую связь','Сравнивают свои карты'],vote:['Сопоставляют ассоциацию с картами','Пытаются понять замысел','Выбирают, кому верить'],thinking:['Принимают решение','Анализируют варианты','Думают над ходом']};
+let pendingBotDecoy=null;
+let pendingBotVote=null;
+let pendingBotClue=null;
+const thinkingLines={decoy:['Подбирают карту-обманку','Ищут подходящую связь','Сравнивают свои карты'],vote:['Сопоставляют ассоциацию с картами','Пытаются понять замысел','Выбирают, кому верить'],clue:['Придумывают ассоциацию','Ищут точный образ','Подбирают хорошую подсказку'],thinking:['Принимают решение','Анализируют варианты','Думают над ходом']};
+function setAiBackgroundStatus(show,text='Боты уже думают…'){const el=document.getElementById('aiBackgroundStatus');const t=document.getElementById('aiBackgroundText');if(!el)return;if(!show){el.classList.remove('show');return;}if(t)t.textContent=text;el.classList.add('show');}
 function setThinking(show,kind='thinking',names=[]){
   const overlay=document.getElementById('thinkingOverlay'); if(!overlay)return;
   if(!show){
@@ -282,6 +286,50 @@ function aiCardProfile(c){
   const clues=(botProfiles[c.name]?.clues||[]).slice(0,8).join(' | ');
   return `${c.name}; ${tags}; ${clues}`.slice(0,900);
 }
+async function aiGenerateClue(c,coach){
+  const fallback=botClue(c,coach);
+  if(!AI_USE_GEMINI||!AI_TEST_MODE)return fallback;
+  const started=performance.now();
+  try{
+    await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+    const payload={coach,personality:coachAiPersonality(coach),card:{name:c.name},profile:aiCardProfile(c)};
+    const r=await fetch('/api/gemini/clue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    const data=await r.json();
+    if(!r.ok||!data.ok)throw new Error(data.error||`HTTP ${r.status}`);
+    const raw=String(data.result?.clue||'').trim();
+    const valid=raw&&raw.length<=90&&!containsPlayerName(raw,c.name)&&!clueLooksIdentifying(raw,c)&&!genericAssociationPenalty.includes(clueKey(raw));
+    const chosen=valid?raw:fallback;
+    if(valid){clueHistory.push(chosen);usedClues.add(clueKey(chosen));rememberClue(chosen);if(clueHistory.length>80)clueHistory.shift();}
+    addAiDebug({coach,task:'clue',clue:chosen,geminiName:valid?chosen:'некорректная ассоциация',scoreName:fallback,chosenName:chosen,source:valid?(data.model?`Gemini · ${data.model}`:'Gemini'):'Fallback',latency:Math.round(performance.now()-started)});
+    return chosen;
+  }catch(err){
+    addAiDebug({coach,task:'clue',clue:fallback,geminiName:'ошибка',scoreName:fallback,chosenName:fallback,source:'Fallback',reason:err.message,latency:Math.round(performance.now()-started)});
+    return fallback;
+  }
+}
+
+async function prepareBotDecoys(entries,clueText){
+  const decisions=await aiCompareBots('decoy',clueText,entries);
+  entries.forEach(e=>{const idx=Number(e.botId),p=players[idx],d=decisions.get(e.botId);const c=p?.hand?.find(x=>String(x.id)===String(d?.choiceId))|| (p?chooseDecoy(p,clueText):null);if(c&&!submissions.some(s=>s.owner===idx))submissions.push({id:c.id,owner:idx});});
+  return decisions;
+}
+async function prepareBotVotes(entries,baseVotes=[]){
+  const decisions=await aiCompareBots('vote',clue,entries);
+  const votes=baseVotes.slice();
+  entries.forEach(e=>{const d=decisions.get(e.botId);const j=submissions.findIndex(s=>String(s.id)===String(d?.choiceId));if(j>=0&&!votes.some(v=>v.voter===Number(e.botId)))votes.push({voter:Number(e.botId),card:j});});
+  return votes;
+}
+async function finishPendingBotDecoys(){const p=pendingBotDecoy;if(!p)return;pendingBotDecoy=null;await p;}
+async function finishPendingBotVotes(baseVotes=[]){
+  const p=pendingBotVote;
+  if(!p)return baseVotes.slice();
+  pendingBotVote=null;
+  const botVotes=await p;
+  const out=baseVotes.slice();
+  botVotes.forEach(v=>{if(!out.some(x=>x.voter===v.voter))out.push(v);});
+  return out;
+}
+
 async function aiCompareBots(task, clueText, entries){
   // Let the thinking UI paint before the Gemini request begins.
   await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
@@ -665,14 +713,37 @@ function renderStory(){
    if(storyteller===0){
     el.innerHTML=`<div class="muted">Выбери одного футболиста из своей руки. Он будет секретной картой.</div><div class="hand">${players[0].hand.map((c,i)=>card(c,`selectSecret(${i})`)).join("")}</div>`;
    } else {
-    let secret=chooseBotSecret(players[storyteller]);
-    secretId=secret.id;
-    clue=botClue(secret, players[storyteller].name);
-    submissions=[{id:secret.id,owner:storyteller}];
-    // Сначала все игроки, кроме ведущего, должны выбрать обманку.
-    // Человеку даём отдельный этап выбора, чтобы он тоже участвовал.
-    phase="decoy"; render();
+    const sp=players[storyteller];
+    if(!pendingBotClue){
+      const secret=chooseBotSecret(sp);
+      if(!secret){return;}
+      secretId=secret.id;
+      submissions=[{id:secret.id,owner:storyteller}];
+      phase="clueGenerating";
+      setThinking(true,'clue',[sp.name]);
+      pendingBotClue=(async()=>{
+        clue=await aiGenerateClue(secret,sp.name);
+        pendingBotClue=null;
+        setThinking(false);
+        const bots=players.map((p,i)=>({p,i})).filter(x=>x.i!==storyteller&&x.p.isBot);
+        const entries=bots.map(x=>({botId:String(x.i),coach:x.p.name,options:x.p.hand}));
+        pendingBotDecoy=prepareBotDecoys(entries,clue);
+        setAiBackgroundStatus(bots.length>0, 'Боты уже выбирают карты…');
+        phase="decoy";
+        render();
+        const humans=players.map((p,i)=>i).filter(i=>!players[i].isBot&&i!==storyteller);
+        if(!humans.length){
+          await finishPendingBotDecoys();
+          setAiBackgroundStatus(false);
+          submissions=shuffle(submissions); phase="vote"; render();
+          if(storyteller===0)setTimeout(botOnlyVoting,80);
+        }
+      })();
+    }
+    el.innerHTML=`<div class="notice"><b>${escapeHtml(sp.name)} придумывает ассоциацию…</b><br><span class="muted">ИИ подбирает подсказку к своей карте.</span></div>`;
    }
+ } else if(phase==="clueGenerating"){
+   el.innerHTML=`<div class="notice"><b>${escapeHtml(players[storyteller]?.name||'Ведущий')} придумывает ассоциацию…</b><br><span class="muted">ИИ ищет короткую, но неочевидную подсказку.</span></div>`;
  } else if(phase==="clue"){
    el.innerHTML=`<div class="notice">Выбери ассоциацию для выбранной карты.</div><input id="clueInput" placeholder="Например: «лучший удар в мировом футболе»"><button onclick="submitClue()">Загадать</button>`;
  } else if(phase==="decoy"){
@@ -712,14 +783,19 @@ function renderStory(){
 }
 function selectSecret(i){selected=i;secretId=players[0].hand[i].id;phase="clue";render()}
 async function submitClue(){
- let v=document.getElementById("clueInput").value.trim(); if(!v||aiBusy)return;
+ let v=document.getElementById("clueInput")?.value.trim(); if(!v||aiBusy)return;
  clue=v; submissions=[{id:secretId,owner:0}];
- const entries=players.filter((p,i)=>i!==0).map((p,i)=>({botId:String(i+1),coach:p.name,options:p.hand}));
- aiBusy=true; setThinking(true,'decoy',entries.map(e=>e.coach));
- const decisions=await aiCompareBots('decoy',clue,entries);
- entries.forEach(e=>{const idx=Number(e.botId),p=players[idx],d=decisions.get(e.botId);const c=p.hand.find(x=>String(x.id)===String(d?.choiceId))||chooseDecoy(p,clue);if(c)submissions.push({id:c.id,owner:idx});});
- aiBusy=false; setThinking(false); submissions=shuffle(submissions); phase="vote"; render();
- if(storyteller===0)setTimeout(botOnlyVoting,150);
+ const entries=players.filter((p,i)=>i!==0).map((p,i)=>({botId:String(i),coach:p.name,options:p.hand}));
+ pendingBotDecoy=prepareBotDecoys(entries,clue);
+ if(entries.length){
+   setThinking(true,'decoy',entries.map(e=>e.coach));
+   phase="decoy"; render();
+   await finishPendingBotDecoys();
+   setThinking(false);
+ }
+ setAiBackgroundStatus(false);
+ submissions=shuffle(submissions); phase="vote"; render();
+ if(storyteller===0)setTimeout(botOnlyVoting,80);
 }
 function clueKey(x){
   return String(x||'').toLowerCase().replace(/ё/g,'е').replace(/[«»"']/g,'').replace(/\s+/g,' ').trim();
@@ -2545,31 +2621,41 @@ function containsPlayerName(text,name){
 async function chooseHumanDecoy(i){
   if(storyteller===0||aiBusy)return;
   const picked=players[0].hand[i]; if(!picked)return;
+  if(submissions.some(s=>s.owner===0))return;
   submissions.push({id:picked.id,owner:0});
-  const entries=players.filter((p,idx)=>idx!==storyteller&&idx!==0).map((p,idx)=>({botId:String(idx),coach:p.name,options:p.hand}));
-  aiBusy=true; setThinking(true,'decoy',entries.map(e=>e.coach));
-  const decisions=await aiCompareBots('decoy',clue,entries);
-  players.forEach((p,idx)=>{if(idx===storyteller||idx===0)return;const d=decisions.get(String(idx));const c=p.hand.find(x=>String(x.id)===String(d?.choiceId))||chooseDecoy(p,clue);if(c)submissions.push({id:c.id,owner:idx});});
-  aiBusy=false; setThinking(false); submissions=shuffle(submissions); phase='vote'; render();
+  render();
+  // Gemini уже выбирает карты ботов в фоне. Ждём его только в момент перехода к голосованию.
+  await finishPendingBotDecoys();
+  setAiBackgroundStatus(false);
+  submissions=shuffle(submissions); phase='vote'; render();
+  if(storyteller!==0){
+    // Боты могут голосовать параллельно с человеческим голосованием.
+    startBotVoteBackground();
+  }
 }
 async function vote(i){
   if(storyteller===0||aiBusy)return;
   if(!submissions[i]||submissions[i].owner===0)return;
-  let votes=[{voter:0,card:i}];
-  const entries=players.map((p,idx)=>({p,idx})).filter(x=>x.idx!==storyteller&&x.idx!==0).map(x=>({botId:String(x.idx),coach:x.p.name,options:submissions.filter(s=>s.owner!==x.idx).map(s=>deck.find(c=>c.id===s.id)).filter(Boolean)}));
-  aiBusy=true; setThinking(true,'vote',entries.map(e=>e.coach));
-  const decisions=await aiCompareBots('vote',clue,entries);
-  entries.forEach(e=>{const d=decisions.get(e.botId);const j=submissions.findIndex(s=>String(s.id)===String(d?.choiceId));if(j>=0)votes.push({voter:Number(e.botId),card:j});});
-  aiBusy=false; setThinking(false); calculate(votes);
+  const humanVote={voter:0,card:i};
+  if(!pendingBotVote)startBotVoteBackground();
+  const votes=await finishPendingBotVotes([humanVote]);
+  setAiBackgroundStatus(false);
+  aiBusy=true; calculate(votes); aiBusy=false;
 }
+function startBotVoteBackground(){
+  if(phase!=="vote"||pendingBotVote)return;
+  const entries=players.map((p,idx)=>({p,idx})).filter(x=>x.idx!==storyteller&&x.p.isBot).map(x=>({botId:String(x.idx),coach:x.p.name,options:submissions.filter(s=>s.owner!==x.idx).map(s=>deck.find(c=>c.id===s.id)).filter(Boolean)}));
+  if(!entries.length)return;
+  pendingBotVote=prepareBotVotes(entries,[]);
+  setAiBackgroundStatus(true,'Боты уже голосуют…');
+}
+
 async function botOnlyVoting(){
   if(phase!=="vote"||storyteller!==0||aiBusy)return;
-  aiBusy=true;
-  const entries=players.map((p,idx)=>({p,idx})).filter(x=>x.idx!==storyteller).map(x=>({botId:String(x.idx),coach:x.name,options:submissions.filter(s=>s.owner!==x.idx).map(s=>deck.find(c=>c.id===s.id)).filter(Boolean)}));
-  setThinking(true,'vote',entries.map(e=>e.coach));
-  const decisions=await aiCompareBots('vote',clue,entries);
-  let votes=[]; entries.forEach(e=>{const d=decisions.get(e.botId);const j=submissions.findIndex(s=>String(s.id)===String(d?.choiceId));if(j>=0)votes.push({voter:Number(e.botId),card:j});});
-  aiBusy=false; setThinking(false); calculate(votes);
+  if(!pendingBotVote)startBotVoteBackground();
+  const votes=await finishPendingBotVotes([]);
+  setAiBackgroundStatus(false);
+  aiBusy=true; calculate(votes); aiBusy=false;
 }
 function calculate(votes){
  votesThisRound=votes.slice();
@@ -2761,27 +2847,46 @@ function mpInitGame(startMsg){
   render();
 }
 async function mpStartRoundIfBot(){
-  if(!gameStarted||phase!=='story'||aiBusy)return;
+  if(!gameStarted||phase!=='story'||aiBusy||pendingBotClue)return;
   if(players[storyteller]?.isBot){
     aiBusy=true; const sp=players[storyteller]; const secret=chooseBotSecret(sp); if(!secret){aiBusy=false;return;}
-    secretId=secret.id; clue=botClue(secret,sp.name); submissions=[{id:secret.id,owner:storyteller}];
-    const bots=players.map((p,i)=>({p,i})).filter(x=>x.i!==storyteller&&x.p.isBot); const names=bots.map(x=>x.p.name);
-    setThinking(true,'decoy',names); if(onlineIsHost)sendOnline({type:'gameThinking',show:true,kind:'decoy',names});
-    const decisions=await aiCompareBots('decoy',clue,bots.map(x=>({botId:String(x.i),coach:x.p.name,options:x.p.hand.map(mpCardById).filter(Boolean)})));
-    bots.forEach(x=>{const d=decisions.get(String(x.i));const c=x.p.hand.map(mpCardById).find(c=>String(c?.id)===String(d?.choiceId))||chooseDecoy(x.p,clue);if(c)submissions.push({id:c.id,owner:x.i});});
+    secretId=secret.id; submissions=[{id:secret.id,owner:storyteller}]; phase='clueGenerating';
+    setThinking(true,'clue',[sp.name]); if(onlineIsHost)sendOnline({type:'gameThinking',show:true,kind:'clue',names:[sp.name]});
+    pendingBotClue=aiGenerateClue(secret,sp.name);
+    clue=await pendingBotClue; pendingBotClue=null;
     aiBusy=false; setThinking(false); if(onlineIsHost)sendOnline({type:'gameThinking',show:false});
-    const humans=mpHumanPlayers(true); if(humans.length)phase='decoy';else{submissions=shuffle(submissions);phase='vote';await mpAddBotVotesIfReady();}
-    mpSync();render();
+    const bots=players.map((p,i)=>({p,i})).filter(x=>x.i!==storyteller&&x.p.isBot);
+    const entries=bots.map(x=>({botId:String(x.i),coach:x.p.name,options:x.p.hand.map(mpCardById).filter(Boolean)}));
+    pendingBotDecoy=prepareBotDecoys(entries,clue);
+    setAiBackgroundStatus(bots.length>0,'Боты уже выбирают карты…'); if(onlineIsHost)sendOnline({type:'gameAiStatus',show:bots.length>0,text:'Боты уже выбирают карты…'});
+    phase='decoy'; mpSync(); render();
+    const humans=mpHumanPlayers(true);
+    if(!humans.length){
+      await finishPendingBotDecoys(); setAiBackgroundStatus(false); if(onlineIsHost)sendOnline({type:'gameAiStatus',show:false});
+      submissions=shuffle(submissions); phase='vote'; mpSync(); render(); startMpBotVoteBackground();
+    }
   }
 }
+function startMpBotVoteBackground(){
+  if(phase!=='vote'||pendingBotVote)return;
+  const bots=players.map((p,idx)=>({p,idx})).filter(x=>x.p.isBot&&x.idx!==storyteller);
+  if(!bots.length)return;
+  const entries=bots.map(x=>({botId:String(x.idx),coach:x.p.name,options:submissions.filter(s=>s.owner!==x.idx).map(s=>mpCardById(s.id)).filter(Boolean)}));
+  pendingBotVote=prepareBotVotes(entries,[]);
+  setAiBackgroundStatus(true,'Боты уже голосуют…'); if(onlineIsHost)sendOnline({type:'gameAiStatus',show:true,text:'Боты уже голосуют…'});
+}
 async function mpAddBotVotesIfReady(){
-  if(phase!=='vote'||aiBusy)return;
-  const humanVoters=mpHumanPlayers(true); const humanVotes=votesThisRound.filter(v=>humanVoters.includes(v.voter)); if(humanVotes.length<humanVoters.length)return;
-  aiBusy=true; const votes=humanVotes.slice(); const bots=players.map((p,idx)=>({p,idx})).filter(x=>x.p.isBot&&x.idx!==storyteller); const names=bots.map(x=>x.p.name);
-  setThinking(true,'vote',names); if(onlineIsHost)sendOnline({type:'gameThinking',show:true,kind:'vote',names});
-  const decisions=await aiCompareBots('vote',clue,bots.map(x=>({botId:String(x.idx),coach:x.p.name,options:submissions.filter(s=>s.owner!==x.idx).map(s=>mpCardById(s.id)).filter(Boolean)})));
-  bots.forEach(x=>{const d=decisions.get(String(x.idx));const j=submissions.findIndex(s=>String(s.id)===String(d?.choiceId));if(j>=0)votes.push({voter:x.idx,card:j});});
-  aiBusy=false; setThinking(false); if(onlineIsHost)sendOnline({type:'gameThinking',show:false}); calculate(votes); mpSync();render();
+  if(phase!=='vote')return;
+  const humanVoters=mpHumanPlayers(true);
+  const humanVotes=votesThisRound.filter(v=>humanVoters.includes(v.voter));
+  if(humanVotes.length<humanVoters.length){
+    startMpBotVoteBackground();
+    return;
+  }
+  if(!pendingBotVote)startMpBotVoteBackground();
+  const votes=await finishPendingBotVotes(humanVotes);
+  setAiBackgroundStatus(false); if(onlineIsHost)sendOnline({type:'gameAiStatus',show:false});
+  aiBusy=true; calculate(votes); aiBusy=false; mpSync(); render();
 }
 function mpSendAction(action,payload={}){
   if(onlineIsHost){ mpHandleAction(onlinePlayerId,action,payload); }
@@ -2807,13 +2912,16 @@ function mpSelectSecret(actor,i){
 async function mpSubmitClue(actor,text){
   if(actor!==storyteller||!mpIsHuman(actor)||phase!=='clue'||!text.trim()||aiBusy)return;
   clue=text.trim(); submissions=[{id:secretId,owner:storyteller}];
-  const botEntries=players.map((p,i)=>({p,i})).filter(x=>x.i!==storyteller&&x.p.isBot); const names=botEntries.map(x=>x.p.name);
-  aiBusy=true; setThinking(true,'decoy',names); sendOnline({type:'gameThinking',show:true,kind:'decoy',names});
-  const decisions=await aiCompareBots('decoy',clue,botEntries.map(x=>({botId:String(x.i),coach:x.p.name,options:x.p.hand.map(mpCardById).filter(Boolean)})));
-  botEntries.forEach(x=>{const d=decisions.get(String(x.i));const c=x.p.hand.map(mpCardById).find(c=>String(c?.id)===String(d?.choiceId))||chooseDecoy(x.p,clue);if(c)submissions.push({id:c.id,owner:x.i});});
-  aiBusy=false; setThinking(false); sendOnline({type:'gameThinking',show:false});
-  const humans=mpHumanPlayers(true); if(humans.length)phase='decoy';else{submissions=shuffle(submissions);phase='vote';}
-  mpSync();render(); if(phase==='vote')mpAddBotVotesIfReady();
+  const botEntries=players.map((p,i)=>({p,i})).filter(x=>x.i!==storyteller&&x.p.isBot);
+  const entries=botEntries.map(x=>({botId:String(x.i),coach:x.p.name,options:x.p.hand.map(mpCardById).filter(Boolean)}));
+  pendingBotDecoy=prepareBotDecoys(entries,clue);
+  setAiBackgroundStatus(botEntries.length>0,'Боты уже выбирают карты…'); if(onlineIsHost)sendOnline({type:'gameAiStatus',show:botEntries.length>0,text:'Боты уже выбирают карты…'});
+  phase='decoy'; mpSync(); render();
+  const humans=mpHumanPlayers(true);
+  if(!humans.length){
+    await finishPendingBotDecoys(); setAiBackgroundStatus(false); if(onlineIsHost)sendOnline({type:'gameAiStatus',show:false});
+    submissions=shuffle(submissions); phase='vote'; mpSync(); render(); startMpBotVoteBackground();
+  }
 }
 async function mpChooseDecoy(actor,i){
   if(actor===storyteller || !mpIsHuman(actor) || phase!=='decoy') return;
@@ -2823,10 +2931,12 @@ async function mpChooseDecoy(actor,i){
   submissions.push({id:c.id,owner:actor});
   const humans=mpHumanPlayers(true);
   if(humans.every(idx=>submissions.some(s=>s.owner===idx))){
+    await finishPendingBotDecoys(); setAiBackgroundStatus(false); if(onlineIsHost)sendOnline({type:'gameAiStatus',show:false});
     submissions=shuffle(submissions); phase='vote';
+    mpSync(); render(); startMpBotVoteBackground();
+  } else {
+    mpSync(); render();
   }
-  mpSync(); render();
-  if(phase==='vote') await mpAddBotVotesIfReady();
 }
 async function mpVote(actor,i){
   if(actor===storyteller || !mpIsHuman(actor) || phase!=='vote') return;
@@ -2926,6 +3036,10 @@ function connectOnline(){
     }
     if(m.type==='gameThinking'){
       if(m.show===false)setThinking(false);else setThinking(true,m.kind||'thinking',Array.isArray(m.names)?m.names:[]);
+      return;
+    }
+    if(m.type==='gameAiStatus'){
+      setAiBackgroundStatus(m.show!==false,String(m.text||'Боты уже думают…'));
       return;
     }
     if(m.type==='gameState'){
