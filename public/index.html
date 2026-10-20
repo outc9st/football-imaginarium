@@ -104,8 +104,19 @@ table{width:100%;border-collapse:collapse}
   button{padding:10px 12px;}
 }
 </style>
+<style>
+#aiDebugPanel{position:fixed;right:12px;bottom:12px;z-index:9999;width:min(430px,calc(100vw - 24px));max-height:46vh;overflow:auto;background:rgba(10,10,14,.96);color:#fff;border:1px solid rgba(255,255,255,.16);border-radius:14px;padding:12px;box-shadow:0 12px 40px rgba(0,0,0,.35);font:12px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;display:none}
+#aiDebugPanel.show{display:block}
+#aiDebugPanel .ai-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;font-weight:700}
+#aiDebugPanel .ai-entry{padding:8px 0;border-top:1px solid rgba(255,255,255,.1)}
+#aiDebugPanel .ai-ok{color:#8df0a8}.ai-fallback{color:#ffcc80}.ai-bad{color:#ff8e8e}
+#aiDebugPanel button{margin:0;padding:5px 8px;font-size:11px}
+</style>
+
 </head>
 <body>
+<div id="aiDebugPanel"><div class="ai-head"><span>🤖 AI TEST — Gemini vs ScoreCard</span><button onclick="toggleAiDebug(false)">Скрыть</button></div><div id="aiDebugBody"><div class="muted">Пока решений нет.</div></div></div>
+
 <div class="app">
 <h1>⚽ Football Imaginarium v29</h1>
 <div class="sub">Футбольная версия Имаджинариума — с настоящим чередованием ведущих и персональными ассоциациями.</div>
@@ -209,6 +220,63 @@ function randomBots(count){
 let players = [];
 let gameStarted = false;
 let round=1, storyteller=0, submissions=[], votesThisRound=[], clue="", secretId=null, phase="story", selected=null;
+
+// AI TEST MODE: Gemini is experimental. ScoreCard remains the fallback.
+const AI_TEST_MODE = true;
+const AI_USE_GEMINI = true;
+let aiDebugEntries=[];
+let aiBusy=false;
+function toggleAiDebug(force){ const el=document.getElementById('aiDebugPanel'); if(!el)return; el.classList.toggle('show', force===undefined?!el.classList.contains('show'):!!force); }
+function escapeHtml(v){return String(v??'').replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));}
+function renderAiDebug(){
+  const el=document.getElementById('aiDebugBody'); if(!el)return;
+  el.innerHTML=aiDebugEntries.slice(-24).reverse().map(e=>{
+    const cls=e.source==='Gemini'?'ai-ok':(e.source==='Fallback'?'ai-fallback':'ai-bad');
+    return `<div class="ai-entry"><b>${escapeHtml(e.coach)}</b> · ${escapeHtml(e.task)}<br><span>«${escapeHtml(e.clue)}»</span><br>Gemini: <b>${escapeHtml(e.geminiName||'—')}</b> ${e.confidence!=null?`(${Math.round(e.confidence*100)}%)`:''}<br>ScoreCard: <b>${escapeHtml(e.scoreName||'—')}</b><br><span class="${cls}">Фактический выбор: <b>${escapeHtml(e.chosenName||'—')}</b> · ${e.source}</span>${e.reason?`<br><span class="muted">${escapeHtml(e.reason)}</span>`:''}</div>`;
+  }).join('') || '<div class="muted">Пока решений нет.</div>';
+}
+function addAiDebug(e){aiDebugEntries.push(e);if(aiDebugEntries.length>40)aiDebugEntries.shift();renderAiDebug();if(AI_TEST_MODE)toggleAiDebug(true);}
+function coachAiPersonality(coach){
+  const styles=(coachStyles&&coachStyles[coach]||[]).join(', ');
+  const bias=(coachClueBias&&coachClueBias[coach]||[]).join(', ');
+  const voice=(coachVoice&&coachVoice[coach]||[]).join(' / ');
+  return `Тренерский профиль: ${styles}. Футбольный фокус: ${bias}. Манера: ${voice}.`;
+}
+function aiCardProfile(c){
+  const tags=allPlayerTags(c).join(', ');
+  const clues=(botProfiles[c.name]?.clues||[]).slice(0,8).join(' | ');
+  return `${c.name}; ${tags}; ${clues}`.slice(0,900);
+}
+async function aiCompareBots(task, clueText, entries){
+  const oldResults=entries.map(e=>{
+    const ranked=e.options.map(c=>({c,score:scoreCard(c,clueText)})).sort((a,b)=>b.score-a.score);
+    return {entry:e,old:ranked[0]?.c||null};
+  });
+  if(!AI_USE_GEMINI || !AI_TEST_MODE){return new Map(oldResults.map(x=>[x.entry.botId,{choiceId:x.old?.id,source:'ScoreCard',old:x.old}]));}
+  const payload={task,clue:clueText,bots:oldResults.map(x=>({
+    botId:x.entry.botId,coach:x.entry.coach,personality:coachAiPersonality(x.entry.coach),
+    options:x.entry.options.map(c=>({id:String(c.id),name:c.name,profile:aiCardProfile(c)}))
+  }))};
+  try{
+    const r=await fetch('/api/gemini/compare',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    const data=await r.json();
+    if(!r.ok||!data.ok)throw new Error(data.error||`HTTP ${r.status}`);
+    const out=new Map();
+    for(const x of oldResults){
+      const g=(data.result?.results||[]).find(v=>String(v.botId)===String(x.entry.botId));
+      const valid=g && x.entry.options.some(c=>String(c.id)===String(g.choiceId));
+      const chosen=valid?x.entry.options.find(c=>String(c.id)===String(g.choiceId)):x.old;
+      const source=valid?'Gemini':'Fallback';
+      addAiDebug({coach:x.entry.coach,task,clue:clueText,geminiName:valid?chosen?.name:(g?.choiceId||'некорректный ID'),scoreName:x.old?.name,chosenName:chosen?.name,source,confidence:Number(g?.confidence),reason:g?.reason||''});
+      out.set(x.entry.botId,{choiceId:chosen?.id,source,old:x.old,gemini:g});
+    }
+    return out;
+  }catch(err){
+    for(const x of oldResults)addAiDebug({coach:x.entry.coach,task,clue:clueText,geminiName:'ошибка',scoreName:x.old?.name,chosenName:x.old?.name,source:'Fallback',reason:err.message});
+    return new Map(oldResults.map(x=>[x.entry.botId,{choiceId:x.old?.id,source:'Fallback',old:x.old,error:err.message}]));
+  }
+}
+
 const botProfiles = {
 "Achraf Hakimi": {tags:"скорость, правый фланг, ПСЖ, Интер, Реал, Марокко", clues:["Правый фланг, который может превратиться в контратаку","Футболист, для которого слово «скорость» почти профессия","Марокко на ЧМ-2022","Защитник, который играет гораздо выше своей позиции"]},
 "Alessandro Bastoni": {tags:"левый центральный защитник, Интер, Италия, длинный пас, тройка защитников", clues:["Защитник, который любит начинать атаки","Итальянская школа обороны, но с современным пасом","Левша в центре обороны","Когда центральный защитник выглядит как полузащитник"]},
@@ -2440,40 +2508,36 @@ function containsPlayerName(text,name){
   return n.split(/\s+/).filter(x=>x.length>=4).some(part=>t.includes(part));
 }
 
-function chooseHumanDecoy(i){
+async function chooseHumanDecoy(i){
   if(storyteller===0)return;
   submissions.push({id:players[0].hand[i].id,owner:0});
+  const entries=players.filter((p,idx)=>idx!==storyteller && idx!==0).map((p,idx)=>({botId:String(idx),coach:p.name,options:p.hand}));
+  const decisions=await aiCompareBots('decoy',clue,entries);
   players.forEach((p,idx)=>{
-    if(idx!==storyteller && idx!==0) submissions.push({id:chooseDecoy(p,clue).id,owner:idx});
+    if(idx===storyteller||idx===0)return;
+    const d=decisions.get(String(idx));
+    const c=p.hand.find(x=>String(x.id)===String(d?.choiceId)) || chooseDecoy(p,clue);
+    if(c) submissions.push({id:c.id,owner:idx});
   });
-  submissions=shuffle(submissions);
-  phase="vote";
-  render();
+  submissions=shuffle(submissions); phase='vote'; render();
 }
-function vote(i){
-  if(storyteller===0)return; // ведущий никогда не голосует
-  if(!submissions[i] || submissions[i].owner===0)return; // нельзя голосовать за свою карту
-  // Сохраняем не только выбранную карту, но и КТО проголосовал.
+async function vote(i){
+  if(storyteller===0)return;
+  if(!submissions[i] || submissions[i].owner===0)return;
   let votes=[{voter:0, card:i}];
-  players.forEach((p,idx)=>{
-    if(idx===storyteller || idx===0)return;
-    let options=submissions.filter(s=>s.owner!==idx).map(s=>({s,j:submissions.indexOf(s),sc:scoreCard(deck.find(c=>c.id===s.id),clue)}));
-    let best=options.sort((a,b)=>b.sc-a.sc)[0];
-    if(best) votes.push({voter:idx, card:best.j});
-  });
+  const entries=players.map((p,idx)=>({p,idx})).filter(x=>x.idx!==storyteller&&x.idx!==0).map(x=>({botId:String(x.idx),coach:x.p.name,options:submissions.filter(s=>s.owner!==x.idx).map(s=>deck.find(c=>c.id===s.id)).filter(Boolean)}));
+  const decisions=await aiCompareBots('vote',clue,entries);
+  entries.forEach(e=>{const d=decisions.get(e.botId);const j=submissions.findIndex(s=>String(s.id)===String(d?.choiceId));if(j>=0)votes.push({voter:Number(e.botId),card:j});});
   calculate(votes);
 }
-function botOnlyVoting(){
-  // Ведущий-человек не голосует. Каждый из трёх ботов голосует отдельно.
-  if(phase!=="vote" || storyteller!==0)return;
+async function botOnlyVoting(){
+  if(phase!=="vote" || storyteller!==0 || aiBusy)return;
+  aiBusy=true;
+  const entries=players.map((p,idx)=>({p,idx})).filter(x=>x.idx!==storyteller).map(x=>({botId:String(x.idx),coach:x.p.name,options:submissions.filter(s=>s.owner!==x.idx).map(s=>deck.find(c=>c.id===s.id)).filter(Boolean)}));
+  const decisions=await aiCompareBots('vote',clue,entries);
   let votes=[];
-  players.forEach((p,idx)=>{
-    if(idx===storyteller)return;
-    let options=submissions.filter(s=>s.owner!==idx).map(s=>({s,j:submissions.indexOf(s),sc:scoreCard(deck.find(c=>c.id===s.id),clue)}));
-    let best=options.sort((a,b)=>b.sc-a.sc)[0];
-    if(best) votes.push({voter:idx, card:best.j});
-  });
-  calculate(votes);
+  entries.forEach(e=>{const d=decisions.get(e.botId);const j=submissions.findIndex(s=>String(s.id)===String(d?.choiceId));if(j>=0)votes.push({voter:Number(e.botId),card:j});});
+  aiBusy=false; calculate(votes);
 }
 function calculate(votes){
  votesThisRound=votes.slice();
@@ -2548,6 +2612,7 @@ function restartGame(){
   round=1;
   storyteller=0;
   clueHistory.length=0;
+  aiDebugEntries=[]; renderAiDebug();
   render();
 }
 
@@ -2662,41 +2727,30 @@ function mpInitGame(startMsg){
   mpSync();
   render();
 }
-function mpStartRoundIfBot(){
-  if(!gameStarted || phase!=='story') return;
+async function mpStartRoundIfBot(){
+  if(!gameStarted || phase!=='story' || aiBusy) return;
   if(players[storyteller]?.isBot){
-    const sp=players[storyteller];
-    const secret=chooseBotSecret(sp);
-    if(!secret) return;
-    secretId=secret.id;
-    clue=botClue(secret,sp.name);
-    submissions=[{id:secret.id,owner:storyteller}];
-    players.forEach((p,i)=>{
-      if(i!==storyteller && p.isBot){
-        const d=chooseDecoy(p,clue);
-        if(d) submissions.push({id:d.id,owner:i});
-      }
-    });
+    aiBusy=true;
+    const sp=players[storyteller]; const secret=chooseBotSecret(sp); if(!secret){aiBusy=false;return;}
+    secretId=secret.id; clue=botClue(secret,sp.name); submissions=[{id:secret.id,owner:storyteller}];
+    const bots=players.map((p,i)=>({p,i})).filter(x=>x.i!==storyteller&&x.p.isBot);
+    const decisions=await aiCompareBots('decoy',clue,bots.map(x=>({botId:String(x.i),coach:x.p.name,options:x.p.hand.map(mpCardById).filter(Boolean)})));
+    bots.forEach(x=>{const d=decisions.get(String(x.i));const c=x.p.hand.map(mpCardById).find(c=>String(c?.id)===String(d?.choiceId))||chooseDecoy(x.p,clue);if(c)submissions.push({id:c.id,owner:x.i});});
+    aiBusy=false;
     const humans=mpHumanPlayers(true);
-    if(humans.length){ phase='decoy'; }
-    else { submissions=shuffle(submissions); phase='vote'; mpAddBotVotesIfReady(); }
+    if(humans.length){phase='decoy';}else{submissions=shuffle(submissions);phase='vote';await mpAddBotVotesIfReady();}
+    mpSync();render();
   }
 }
-function mpAddBotVotesIfReady(){
-  if(phase!=='vote') return;
-  const humanVoters=mpHumanPlayers(true);
-  const humanVotes=votesThisRound.filter(v=>humanVoters.includes(v.voter));
-  if(humanVotes.length<humanVoters.length) return;
-  const votes=humanVotes.slice();
-  players.forEach((p,idx)=>{
-    if(!p.isBot || idx===storyteller) return;
-    const options=submissions.filter(s=>s.owner!==idx).map(s=>({s,j:submissions.indexOf(s),sc:scoreCard(mpCardById(s.id),clue)}));
-    const best=options.sort((a,b)=>b.sc-a.sc)[0];
-    if(best) votes.push({voter:idx,card:best.j});
-  });
-  calculate(votes);
-  mpSync();
-  render();
+async function mpAddBotVotesIfReady(){
+  if(phase!=='vote'||aiBusy)return;
+  const humanVoters=mpHumanPlayers(true); const humanVotes=votesThisRound.filter(v=>humanVoters.includes(v.voter));
+  if(humanVotes.length<humanVoters.length)return;
+  aiBusy=true; const votes=humanVotes.slice();
+  const bots=players.map((p,idx)=>({p,idx})).filter(x=>x.p.isBot&&x.idx!==storyteller);
+  const decisions=await aiCompareBots('vote',clue,bots.map(x=>({botId:String(x.idx),coach:x.p.name,options:submissions.filter(s=>s.owner!==x.idx).map(s=>mpCardById(s.id)).filter(Boolean)})));
+  bots.forEach(x=>{const d=decisions.get(String(x.idx));const j=submissions.findIndex(s=>String(s.id)===String(d?.choiceId));if(j>=0)votes.push({voter:x.idx,card:j});});
+  aiBusy=false; calculate(votes); mpSync(); render();
 }
 function mpSendAction(action,payload={}){
   if(onlineIsHost){ mpHandleAction(onlinePlayerId,action,payload); }
@@ -2719,20 +2773,21 @@ function mpSelectSecret(actor,i){
   selected=i; secretId=c.id; phase='clue';
   mpSync(); render();
 }
-function mpSubmitClue(actor,text){
+async function mpSubmitClue(actor,text){
   if(actor!==storyteller || !mpIsHuman(actor) || phase!=='clue' || !text.trim()) return;
   clue=text.trim();
   submissions=[{id:secretId,owner:storyteller}];
-  players.forEach((p,i)=>{
-    if(i!==storyteller && p.isBot){const d=chooseDecoy(p,clue); if(d) submissions.push({id:d.id,owner:i});}
-  });
+  // Bot decoys are selected by Gemini in test mode, with ScoreCard fallback.
+  const botEntries=players.map((p,i)=>({p,i})).filter(x=>x.i!==storyteller&&x.p.isBot);
+  const decisions=await aiCompareBots('decoy',clue,botEntries.map(x=>({botId:String(x.i),coach:x.p.name,options:x.p.hand.map(mpCardById).filter(Boolean)})));
+  botEntries.forEach(x=>{const d=decisions.get(String(x.i));const c=x.p.hand.map(mpCardById).find(c=>String(c?.id)===String(d?.choiceId))||chooseDecoy(x.p,clue);if(c)submissions.push({id:c.id,owner:x.i});});
   const humans=mpHumanPlayers(true);
   if(humans.length){ phase='decoy'; }
   else { submissions=shuffle(submissions); phase='vote'; }
   mpSync(); render();
   if(phase==='vote') mpAddBotVotesIfReady();
 }
-function mpChooseDecoy(actor,i){
+async function mpChooseDecoy(actor,i){
   if(actor===storyteller || !mpIsHuman(actor) || phase!=='decoy') return;
   if(submissions.some(s=>s.owner===actor)) return;
   const c=players[actor].hand[i]; if(!c)return;
@@ -2743,14 +2798,14 @@ function mpChooseDecoy(actor,i){
     submissions=shuffle(submissions); phase='vote';
   }
   mpSync(); render();
-  if(phase==='vote') mpAddBotVotesIfReady();
+  if(phase==='vote') await mpAddBotVotesIfReady();
 }
-function mpVote(actor,i){
+async function mpVote(actor,i){
   if(actor===storyteller || !mpIsHuman(actor) || phase!=='vote') return;
   if(!submissions[i] || submissions[i].owner===actor) return;
   if(votesThisRound.some(v=>v.voter===actor)) return;
   votesThisRound.push({voter:actor,card:i});
-  mpAddBotVotesIfReady();
+  await mpAddBotVotesIfReady();
   if(phase==='vote'){mpSync();render();}
 }
 function mpNextRound(){
