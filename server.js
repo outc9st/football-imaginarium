@@ -49,12 +49,12 @@ function leave(p){
 function sendJson(res,status,data){const body=JSON.stringify(data);res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'});res.end(body)}
 function readJson(req){return new Promise((resolve,reject)=>{let s='';req.on('data',c=>{s+=c;if(s.length>1500000)req.destroy()});req.on('end',()=>{try{resolve(JSON.parse(s||'{}'))}catch(e){reject(e)}});req.on('error',reject)})}
 function clip(v,n=800){return String(v??'').slice(0,n)}
-async function callGeminiModel(model,payload,timeoutMs=4500){
+async function callGeminiModel(model,payload){
   const url=`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`;
-  const controller=new AbortController();
-  const timer=setTimeout(()=>controller.abort(),timeoutMs);
+  // Test mode: do not abort a valid Gemini request prematurely. The game shows a
+  // thinking animation while waiting, so we can measure the real API latency.
   try{
-    const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),signal:controller.signal});
+    const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
     const text=await r.text();
     if(!r.ok){
       const err=new Error(`Gemini HTTP ${r.status}: ${text.slice(0,500)}`);
@@ -67,12 +67,9 @@ async function callGeminiModel(model,payload,timeoutMs=4500){
     let result;try{result=JSON.parse(raw)}catch{throw new Error('Gemini вернул некорректный structured JSON.')}
     return {result,model};
   }catch(err){
-    if(err.name==='AbortError'){
-      const e=new Error(`Gemini timeout (${timeoutMs} ms)`);e.retryable=true;throw e;
-    }
     if([429,500,502,503,504].includes(err.status)) err.retryable=true;
     throw err;
-  }finally{clearTimeout(timer)}
+  }
 }
 
 async function geminiCompare(body){
@@ -102,17 +99,16 @@ async function geminiCompare(body){
   const primary=isDecoy?'gemini-3.5-flash-lite':configured;
   const fallback=isDecoy?'gemini-3.6-flash':'gemini-3.6-flash';
   const models=[primary,fallback].filter((m,i,a)=>m&&a.indexOf(m)===i);
-  const timeout=isDecoy?3500:4500;
   let lastError=null;
   for(const model of models){
     try{
       const level=isDecoy?'minimal':'low';
       payload.generationConfig.thinkingConfig={thinkingLevel:level};
-      return await callGeminiModel(model,payload,timeout);
+      return await callGeminiModel(model,payload);
     }catch(err){
       lastError=err;
-      // Capacity errors are worth an immediate fallback. A timeout means the game
-      // should move on quickly to the local fallback rather than stacking waits.
+      // Capacity errors are worth an immediate fallback. In this test build we do
+      // not impose a client-side timeout, so successful requests are allowed to finish.
       if(!err.retryable || /timeout/i.test(err.message||'')) break;
     }
   }
