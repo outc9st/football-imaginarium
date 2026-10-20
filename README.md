@@ -1,12 +1,35 @@
-# Football Imaginarium Online v26
+# Football Imaginarium Online — v31 AI test
 
-Multiplayer prototype with a shared game state.
+Это экспериментальная копия v31. Рабочая v31 не изменяется.
 
-- Render hosts the Node.js + WebSocket server.
-- The room creator is the authoritative game host.
-- Human players send actions to the host.
-- The host runs bot logic, scoring, turns and card dealing.
-- After every action the host broadcasts one synchronized game state to everyone.
-- The lobby supports 1–8 human players plus 3–7 bots.
+## Что добавлено
 
-This is a host-authoritative prototype; the next hardening step would be moving the authoritative game logic entirely to the server.
+- Gemini 3.8 Flash как экспериментальный AI-мозг ботов.
+- Старый `ScoreCard` остаётся fallback.
+- В режиме теста одновременно фиксируются решение Gemini и решение ScoreCard.
+- В интерфейсе появляется панель `AI TEST — Gemini vs ScoreCard`.
+- Для каждого решения видно: тренер-бот, ассоциация, выбор Gemini, выбор ScoreCard, фактический источник и краткая причина Gemini.
+- Gemini используется для выбора карты-обманки и для голосования ботов.
+- API-ключ хранится только на сервере через `GEMINI_API_KEY`.
+
+## Запуск локально
+
+```bash
+npm install
+GEMINI_API_KEY="твой_ключ" npm start
+```
+
+После запуска открой `http://localhost:3000`.
+
+Без `GEMINI_API_KEY` игра всё равно запускается: все решения автоматически идут через старый ScoreCard, а в AI TEST будет видно `Fallback`.
+
+## Render
+
+В Environment Variables добавь:
+
+- `GEMINI_API_KEY` — ключ Google AI Studio.
+- `GEMINI_MODEL` — необязательно; по умолчанию `gemini-3.8-flash`.
+
+Команда запуска остаётся `npm start`.
+
+Официальная документация Google: https://ai.google.dev/gemini-api/docs/models
