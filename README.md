@@ -70,3 +70,9 @@ Google's current documentation describes Gemini 3.8 Flash as supporting low/medi
 - AI-generated clues are validated against player-name/direct-identifier rules and fall back to the existing clue system if invalid or unavailable.
 - AI-generated clues and their latency are shown in the AI TEST panel.
 - The v31 baseline remains untouched.
+
+
+## v6
+- Bot clue generation now has a dedicated thinking state: the coach name is shown (for example, `Пеп придумывает ассоциацию…`).
+- The same status is synchronized to online players, including the small background AI status indicator.
+- Clue-generation animation has dedicated rotating status messages and a highlighted coach chip.
