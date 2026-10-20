@@ -35,10 +35,21 @@ GEMINI_API_KEY="твой_ключ" npm start
 Официальная документация Google: https://ai.google.dev/gemini-api/docs/models
 
 
-## Gemini Test v2 — исправления после реального теста
+## Gemini Test v3 — исправления после реального теста
 - Исправлена ошибка multiplayer: карта-обманка бота передавалась в AI-слой как объект вместо ID, из-за чего у Gemini иногда был пустой список карт.
 - Добавлен таймаут Gemini (7 секунд на попытку).
 - Добавлен автоматический переход с `gemini-3.8-flash` на `gemini-3.6-flash`, затем на `gemini-3.5-flash-lite` при 429/5xx/таймауте.
 - Ответы с несуществующим `choiceId` безопасно уходят в ScoreCard fallback.
 - В AI TEST показывается фактически использованная модель.
 - Бэкап v31 не изменяется.
+
+### v3 — speed + thinking UI
+- Gemini decoy selection uses `gemini-3.5-flash-lite` with `thinkingLevel: minimal` for fast classification.
+- Gemini voting uses the configured Flash model with `thinkingLevel: low`; fallback uses `gemini-3.6-flash`.
+- Timeouts reduced to 3.5 s for decoy and 4.5 s for voting; a timeout no longer stacks through every fallback model.
+- Responses are minimized to structured IDs/confidence; long explanations are no longer required.
+- Added an animated **«Игроки думают…»** overlay during Gemini/bot decisions, including multiplayer synchronization.
+- Added AI-test latency in milliseconds to the debug panel.
+- The Gemini API key remains server-side in `GEMINI_API_KEY`.
+
+Google's current documentation describes Gemini 3.8 Flash as supporting low/medium/high thinking, while Gemini 3.5 Flash-Lite supports minimal thinking and is intended for fast, high-volume tasks.
