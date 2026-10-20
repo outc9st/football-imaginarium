@@ -60,3 +60,13 @@ Google's current documentation describes Gemini 3.8 Flash as supporting low/medi
 - Added a double animation-frame yield before Gemini requests so the “Игроки думают…” overlay is painted before network work begins.
 - Made the thinking overlay more prominent and added “Игра не зависла — боты принимают решение”.
 - Gemini fallback on HTTP capacity errors remains; this test build intentionally does not abort successful requests prematurely.
+
+
+## v5 — parallel bots + AI associations
+- Gemini bot decoy selection now starts in the background as soon as the clue is known; human players can choose their decoys while Gemini works.
+- Bot voting starts as soon as the voting phase opens and runs in parallel with human voting. The game waits for Gemini only if the human players finish first.
+- Added a small non-blocking “Боты уже думают…” status for background AI work; the full modal is used only when the player actually has to wait.
+- Bot storytellers can now ask Gemini to invent the association itself instead of relying only on the local clue database.
+- AI-generated clues are validated against player-name/direct-identifier rules and fall back to the existing clue system if invalid or unavailable.
+- AI-generated clues and their latency are shown in the AI TEST panel.
+- The v31 baseline remains untouched.

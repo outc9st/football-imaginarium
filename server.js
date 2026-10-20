@@ -119,6 +119,22 @@ const server=http.createServer(async (req,res)=>{
   const u=decodeURIComponent(req.url.split('?')[0]);
   if(req.method==='GET' && u==='/api/ai-status') return sendJson(res,200,{configured:!!GEMINI_API_KEY,model:GEMINI_MODEL});
   if(req.method==='POST' && u==='/api/gemini/compare'){try{const out=await geminiCompare(await readJson(req));return sendJson(res,200,{ok:true,model:out.model,result:out.result})}catch(e){return sendJson(res,502,{ok:false,error:e.message||'Gemini request failed'})}}
+  if(req.method==='POST' && u==='/api/gemini/clue'){try{
+    if(!GEMINI_API_KEY) throw new Error('GEMINI_API_KEY не задан на сервере.');
+    const body=await readJson(req);
+    const card=body.card||{};
+    const coach=clip(body.coach,80);
+    const personality=clip(body.personality,900);
+    const profile=clip(body.profile,1800);
+    const prompt=`Ты придумываешь ассоциацию для футбольной версии Имаджинариума.\n\nЗагаданная карта: ${clip(card.name,120)}\nПрофиль футболиста: ${profile}\n${personality}\n\nПридумай ОДНУ короткую, выразительную ассоциацию для этой карты. Она должна быть полезной в игре: не называть футболиста и не быть почти прямой подсказкой через уникальное имя, клуб, страну или точный факт, который однозначно выдаёт карту. Предпочтительны футбольная идея, метафора, игровое качество, характерный эпизод или образ. Избегай банальных ассоциаций вроде «хороший игрок», «талант», «скорость» без дополнительного смысла. Длина — примерно 2–8 слов. Манера может учитывать профиль тренера, но ассоциация должна оставаться понятной другим игрокам.\n\nВерни только JSON с одним полем clue.`;
+    const payload={contents:[{role:'user',parts:[{text:prompt}]}],generationConfig:{responseMimeType:'application/json',responseSchema:{type:'object',properties:{clue:{type:'string'}},required:['clue']},thinkingConfig:{thinkingLevel:'low'}}};
+    let lastError=null;
+    for(const model of [GEMINI_MODEL||'gemini-3.8-flash','gemini-3.6-flash']){
+      try{const out=await callGeminiModel(model,payload);return sendJson(res,200,{ok:true,model:out.model,result:out.result});}
+      catch(e){lastError=e;if(!e.retryable)break;}
+    }
+    throw lastError||new Error('Gemini clue request failed');
+  }catch(e){return sendJson(res,502,{ok:false,error:e.message||'Gemini clue request failed'})}}
   let filePath=u; if(filePath==='/')filePath='/index.html';
   const f=path.normalize(path.join(PUBLIC,filePath));
   if(!f.startsWith(PUBLIC)){res.writeHead(403);return res.end('Forbidden')}
