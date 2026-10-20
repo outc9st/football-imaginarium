@@ -104,11 +104,11 @@ table{width:100%;border-collapse:collapse}
   button{padding:10px 12px;}
 }
 /* AI thinking overlay */
-#thinkingOverlay{position:fixed;inset:0;z-index:9000;display:none;align-items:center;justify-content:center;background:rgba(8,11,17,.58);backdrop-filter:blur(3px);padding:18px;box-sizing:border-box}
+#thinkingOverlay{position:fixed;inset:0;z-index:100000;display:none;align-items:center;justify-content:center;background:rgba(8,11,17,.58);backdrop-filter:blur(3px);padding:18px;box-sizing:border-box}
 #thinkingOverlay.show{display:flex}
 .thinking-box{width:min(420px,calc(100vw - 36px));background:#181d27;border:1px solid #354052;border-radius:18px;padding:22px 20px;box-shadow:0 18px 60px rgba(0,0,0,.42);text-align:center}
 .thinking-title{font-size:21px;font-weight:800;margin-bottom:8px}
-.thinking-sub{color:#a9b1bd;min-height:20px}
+.thinking-sub{color:#a9b1bd;min-height:20px}.thinking-wait{margin-top:10px;font-size:11px;color:#6f7b8d}
 .thinking-players{display:flex;justify-content:center;gap:8px;flex-wrap:wrap;margin:17px 0 12px}
 .thinking-player{display:inline-flex;align-items:center;gap:7px;background:#242b38;border:1px solid #303949;border-radius:10px;padding:7px 10px;font-size:12px;font-weight:700;animation:thinkingFloat 1.4s ease-in-out infinite}
 .thinking-player:nth-child(2){animation-delay:.15s}.thinking-player:nth-child(3){animation-delay:.3s}.thinking-player:nth-child(4){animation-delay:.45s}
@@ -129,11 +129,11 @@ table{width:100%;border-collapse:collapse}
 
 </head>
 <body>
-<div id="thinkingOverlay" aria-live="polite" aria-busy="true"><div class="thinking-box"><div class="thinking-title" id="thinkingTitle">Игроки думают<span class="thinking-dots"><i></i><i></i><i></i></span></div><div class="thinking-sub" id="thinkingSub">Подбирают лучший вариант</div><div class="thinking-players" id="thinkingPlayers"></div></div></div>
+<div id="thinkingOverlay" aria-live="polite" aria-busy="true"><div class="thinking-box"><div class="thinking-title" id="thinkingTitle">Игроки думают<span class="thinking-dots"><i></i><i></i><i></i></span></div><div class="thinking-sub" id="thinkingSub">Подбирают лучший вариант</div><div class="thinking-players" id="thinkingPlayers"></div><div class="thinking-wait">Игра не зависла — боты принимают решение</div></div></div>
 <div id="aiDebugPanel"><div class="ai-head"><span>🤖 AI TEST — Gemini vs ScoreCard</span><button onclick="toggleAiDebug(false)">Скрыть</button></div><div id="aiDebugBody"><div class="muted">Пока решений нет.</div></div></div>
 
 <div class="app">
-<h1>⚽ Football Imaginarium v31 — Gemini Test v3</h1>
+<h1>⚽ Football Imaginarium v31 — Gemini Test v4</h1>
 <div class="sub">Футбольная версия Имаджинариума — с настоящим чередованием ведущих и персональными ассоциациями.</div>
 
 <div class="panel online-panel" id="onlineHomePanel">
@@ -283,6 +283,8 @@ function aiCardProfile(c){
   return `${c.name}; ${tags}; ${clues}`.slice(0,900);
 }
 async function aiCompareBots(task, clueText, entries){
+  // Let the thinking UI paint before the Gemini request begins.
+  await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
   const oldResults=entries.map(e=>{const ranked=e.options.map(c=>({c,score:scoreCard(c,clueText)})).sort((a,b)=>b.score-a.score);return {entry:e,old:ranked[0]?.c||null};});
   if(!AI_USE_GEMINI || !AI_TEST_MODE)return new Map(oldResults.map(x=>[x.entry.botId,{choiceId:x.old?.id,source:'ScoreCard',old:x.old}]));
   const payload={task,clue:clueText,bots:oldResults.map(x=>({botId:x.entry.botId,coach:x.entry.coach,personality:coachAiPersonality(x.entry.coach),options:x.entry.options.map(c=>({id:String(c.id),name:c.name,profile:aiCardProfile(c)}))}))};
