@@ -49,28 +49,61 @@ function leave(p){
 function sendJson(res,status,data){const body=JSON.stringify(data);res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'});res.end(body)}
 function readJson(req){return new Promise((resolve,reject)=>{let s='';req.on('data',c=>{s+=c;if(s.length>1500000)req.destroy()});req.on('end',()=>{try{resolve(JSON.parse(s||'{}'))}catch(e){reject(e)}});req.on('error',reject)})}
 function clip(v,n=800){return String(v??'').slice(0,n)}
+async function callGeminiModel(model,payload,timeoutMs=7000){
+  const url=`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`;
+  const controller=new AbortController();
+  const timer=setTimeout(()=>controller.abort(),timeoutMs);
+  try{
+    const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),signal:controller.signal});
+    const text=await r.text();
+    if(!r.ok){
+      const err=new Error(`Gemini HTTP ${r.status}: ${text.slice(0,500)}`);
+      err.status=r.status;
+      throw err;
+    }
+    let data;try{data=JSON.parse(text)}catch{throw new Error('Gemini вернул некорректный JSON.')}
+    const raw=data?.candidates?.[0]?.content?.parts?.[0]?.text;
+    if(!raw)throw new Error('Gemini не вернул результат.');
+    let result;try{result=JSON.parse(raw)}catch{throw new Error('Gemini вернул некорректный structured JSON.')}
+    return {result,model};
+  }catch(err){
+    if(err.name==='AbortError'){
+      const e=new Error(`Gemini timeout (${timeoutMs} ms)`);e.retryable=true;throw e;
+    }
+    if([429,500,502,503,504].includes(err.status)) err.retryable=true;
+    throw err;
+  }finally{clearTimeout(timer)}
+}
+
 async function geminiCompare(body){
   if(!GEMINI_API_KEY) throw new Error('GEMINI_API_KEY не задан на сервере.');
   const bots=(Array.isArray(body.bots)?body.bots:[]).slice(0,8).map(b=>({
     botId:String(b.botId),coach:clip(b.coach,80),personality:clip(b.personality,900),
     options:(Array.isArray(b.options)?b.options:[]).slice(0,12).map(o=>({id:String(o.id),name:clip(o.name,120),profile:clip(o.profile,900)}))
   }));
+  if(!bots.some(b=>b.options.length)) throw new Error('У ботов нет доступных карт для выбора.');
   const task=body.task==='decoy'?'выбери карту-обманку из своей руки для ассоциации':'угадай, какая из отправленных карт является секретной картой ведущего';
-  const prompt=`Ты — ИИ-мозг бота в футбольной игре ассоциаций.\n\nЗадача: ${task}.\nАссоциация: «${clip(body.clue,500)}»\n\nПравила:\n- Понимай смысл ассоциации как футбольную идею, а не только совпадение слов.\n- Используй футбольные факты из профилей карт.\n- Явные факты важнее слабых тематических совпадений.\n- Учитывай отрицательную совместимость: ассоциация про чувство штрафной не должна автоматически вести к защитнику или вратарю.\n- Не выдумывай факты, которых нет в профилях, кроме общеизвестных футбольных фактов.\n- Характер тренера влияет на предпочтения и тай-брейки, но не должен перебивать очевидное смысловое соответствие.\n- Для каждого бота верни ровно один существующий option id.\n\nБоты и варианты:\n${JSON.stringify(bots)}`;
-  const url=`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(GEMINI_MODEL)}:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`;
+  const prompt=`Ты — ИИ-мозг бота в футбольной игре ассоциаций.\n\nЗадача: ${task}.\nАссоциация: «${clip(body.clue,500)}»\n\nПравила:\n- Понимай смысл ассоциации как футбольную идею, а не только совпадение слов.\n- Используй футбольные факты из профилей карт.\n- Явные факты важнее слабых тематических совпадений.\n- Учитывай отрицательную совместимость: ассоциация про чувство штрафной не должна автоматически вести к защитнику или вратарю.\n- Не выдумывай факты, которых нет в профилях, кроме общеизвестных футбольных фактов.\n- Характер тренера влияет на предпочтения и тай-брейки, но не должен перебивать очевидное смысловое соответствие.\n- Для каждого бота верни ровно один существующий option id из его собственного списка.\n- Никогда не возвращай ID из списка другого бота.\n\nБоты и варианты:\n${JSON.stringify(bots)}`;
   const payload={contents:[{role:'user',parts:[{text:prompt}]}],generationConfig:{temperature:0.15,responseMimeType:'application/json',responseSchema:{type:'object',properties:{results:{type:'array',items:{type:'object',properties:{botId:{type:'string'},choiceId:{type:'string'},confidence:{type:'number'},reason:{type:'string'}},required:['botId','choiceId','confidence','reason']}}},required:['results']}}};
-  const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
-  const text=await r.text();
-  if(!r.ok) throw new Error(`Gemini HTTP ${r.status}: ${text.slice(0,500)}`);
-  let data;try{data=JSON.parse(text)}catch{throw new Error('Gemini вернул некорректный JSON.')}
-  const raw=data?.candidates?.[0]?.content?.parts?.[0]?.text;if(!raw)throw new Error('Gemini не вернул результат.');
-  let result;try{result=JSON.parse(raw)}catch{throw new Error('Gemini вернул некорректный structured JSON.')}
-  return result;
+
+  const configured=GEMINI_MODEL || 'gemini-3.8-flash';
+  const models=[configured,'gemini-3.6-flash','gemini-3.5-flash-lite'].filter((m,i,a)=>m&&a.indexOf(m)===i);
+  let lastError=null;
+  for(const model of models){
+    try{
+      return await callGeminiModel(model,payload,7000);
+    }catch(err){
+      lastError=err;
+      if(!err.retryable) break;
+    }
+  }
+  throw lastError || new Error('Gemini request failed');
 }
+
 const server=http.createServer(async (req,res)=>{
   const u=decodeURIComponent(req.url.split('?')[0]);
   if(req.method==='GET' && u==='/api/ai-status') return sendJson(res,200,{configured:!!GEMINI_API_KEY,model:GEMINI_MODEL});
-  if(req.method==='POST' && u==='/api/gemini/compare'){try{return sendJson(res,200,{ok:true,model:GEMINI_MODEL,result:await geminiCompare(await readJson(req))})}catch(e){return sendJson(res,502,{ok:false,error:e.message||'Gemini request failed'})}}
+  if(req.method==='POST' && u==='/api/gemini/compare'){try{const out=await geminiCompare(await readJson(req));return sendJson(res,200,{ok:true,model:out.model,result:out.result})}catch(e){return sendJson(res,502,{ok:false,error:e.message||'Gemini request failed'})}}
   let filePath=u; if(filePath==='/')filePath='/index.html';
   const f=path.normalize(path.join(PUBLIC,filePath));
   if(!f.startsWith(PUBLIC)){res.writeHead(403);return res.end('Forbidden')}
