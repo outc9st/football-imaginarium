@@ -118,7 +118,7 @@ table{width:100%;border-collapse:collapse}
 <div id="aiDebugPanel"><div class="ai-head"><span>🤖 AI TEST — Gemini vs ScoreCard</span><button onclick="toggleAiDebug(false)">Скрыть</button></div><div id="aiDebugBody"><div class="muted">Пока решений нет.</div></div></div>
 
 <div class="app">
-<h1>⚽ Football Imaginarium v29</h1>
+<h1>⚽ Football Imaginarium v31 — Gemini Test v2</h1>
 <div class="sub">Футбольная версия Имаджинариума — с настоящим чередованием ведущих и персональными ассоциациями.</div>
 
 <div class="panel online-panel" id="onlineHomePanel">
@@ -231,7 +231,7 @@ function escapeHtml(v){return String(v??'').replace(/[&<>"']/g,ch=>({'&':'&amp;'
 function renderAiDebug(){
   const el=document.getElementById('aiDebugBody'); if(!el)return;
   el.innerHTML=aiDebugEntries.slice(-24).reverse().map(e=>{
-    const cls=e.source==='Gemini'?'ai-ok':(e.source==='Fallback'?'ai-fallback':'ai-bad');
+    const cls=String(e.source||'').startsWith('Gemini')?'ai-ok':(e.source==='Fallback'?'ai-fallback':'ai-bad');
     return `<div class="ai-entry"><b>${escapeHtml(e.coach)}</b> · ${escapeHtml(e.task)}<br><span>«${escapeHtml(e.clue)}»</span><br>Gemini: <b>${escapeHtml(e.geminiName||'—')}</b> ${e.confidence!=null?`(${Math.round(e.confidence*100)}%)`:''}<br>ScoreCard: <b>${escapeHtml(e.scoreName||'—')}</b><br><span class="${cls}">Фактический выбор: <b>${escapeHtml(e.chosenName||'—')}</b> · ${e.source}</span>${e.reason?`<br><span class="muted">${escapeHtml(e.reason)}</span>`:''}</div>`;
   }).join('') || '<div class="muted">Пока решений нет.</div>';
 }
@@ -267,7 +267,7 @@ async function aiCompareBots(task, clueText, entries){
       const valid=g && x.entry.options.some(c=>String(c.id)===String(g.choiceId));
       const chosen=valid?x.entry.options.find(c=>String(c.id)===String(g.choiceId)):x.old;
       const source=valid?'Gemini':'Fallback';
-      addAiDebug({coach:x.entry.coach,task,clue:clueText,geminiName:valid?chosen?.name:(g?.choiceId||'некорректный ID'),scoreName:x.old?.name,chosenName:chosen?.name,source,confidence:Number(g?.confidence),reason:g?.reason||''});
+      addAiDebug({coach:x.entry.coach,task,clue:clueText,geminiName:valid?chosen?.name:(g?.choiceId||'некорректный ID'),scoreName:x.old?.name,chosenName:chosen?.name,source:valid?(data.model?`Gemini · ${data.model}`:'Gemini'):'Fallback',confidence:Number(g?.confidence),reason:g?.reason||''});
       out.set(x.entry.botId,{choiceId:chosen?.id,source,old:x.old,gemini:g});
     }
     return out;
@@ -2663,7 +2663,7 @@ function mpHumanPlayers(excludeStoryteller=true){
 function mpAllHumanReady(map){
   return mpHumanPlayers(true).every(i=>Object.prototype.hasOwnProperty.call(map,i));
 }
-function mpCardById(id){ return deck.find(c=>c.id===id); }
+function mpCardById(id){ const key=(id&&typeof id==='object')?id.id:id; return deck.find(c=>String(c.id)===String(key)); }
 function mpPlayerIndexByOnlineId(id){ return players.findIndex(p=>p.onlineId===id); }
 function mpPublicState(){
   return {
