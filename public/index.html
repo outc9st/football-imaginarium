@@ -285,7 +285,7 @@ function renderAiDebug(){
   const el=document.getElementById('aiDebugBody'); if(!el)return;
   el.innerHTML=aiDebugEntries.slice(-24).reverse().map(e=>{
     const cls=String(e.source||'').startsWith('Gemini')?'ai-ok':(e.source==='Fallback'?'ai-fallback':'ai-bad');
-    return `<div class="ai-entry"><b>${escapeHtml(thinkingPersonLabel(e.coach))}</b> · ${escapeHtml(e.task)}<br><span>«${escapeHtml(e.clue)}»</span><br>Gemini: <b>${escapeHtml(e.geminiName||'—')}</b> ${Number.isFinite(e.confidence)?`(${Math.round(e.confidence*100)}%)`:''}<br>ScoreCard: <b>${escapeHtml(e.scoreName||'—')}</b><br><span class="${cls}">Фактический выбор: <b>${escapeHtml(e.chosenName||'—')}</b> · ${e.source}${e.latency?` · ${e.latency} ms`:''}</span>${e.reason?`<br><span class="muted">${escapeHtml(e.reason)}</span>`:''}</div>`;
+    return `<div class="ai-entry"><b>${escapeHtml(thinkingPersonLabel(e.coach))}</b> · ${escapeHtml(e.task)}<br>Gemini: <b>${escapeHtml(e.geminiName||'—')}</b> ${Number.isFinite(e.confidence)?`(${Math.round(e.confidence*100)}%)`:''}<br>ScoreCard: <b>${escapeHtml(e.scoreName||'—')}</b><br><span class="${cls}">Фактический выбор: <b>${escapeHtml(e.chosenName||'—')}</b> · ${e.source}${e.latency?` · ${e.latency} ms`:''}</span>${e.reason?`<br><span class="muted">${escapeHtml(e.reason)}</span>`:''}</div>`;
   }).join('') || '<div class="muted">Пока решений нет.</div>';
 }
 function addAiDebug(e){aiDebugEntries.push(e);if(aiDebugEntries.length>40)aiDebugEntries.shift();renderAiDebug();if(AI_TEST_MODE)toggleAiDebug(true);}
@@ -364,200 +364,10 @@ function scoreCardVoteReason(card,clueText){
   const clueTextClean=String(clueText||'').trim();
   const tags=card?allPlayerTags(card):[];
   const cue=semanticTagsForClue(clueTextClean).find(signal=>tags.some(tag=>tagMatches(tag,signal)));
-  if(cue){
-    const profileFact=tags.find(tag=>tagMatches(tag,cue))||cue;
-    return `Ассоциация «${clueTextClean}» указывает на «${cue}»; в профиле ${card.name} отмечено «${profileFact}», поэтому запасной выбор пал на эту карту.`;
-  }
+  if(cue)return `В этой карте лучше всего считывается образ ${cue}.`;
   const intent=clueRoleIntent(clueTextClean);
-  if(intent.length&&card&&roleCompatible(cardFactProfile(card),intent)){
-    const roleLabels={keeper:'вратаря',defender:'защитника',attacker:'нападающего',forward:'форварда',midfielder:'полузащитника',dm:'опорного полузащитника',am:'атакующего полузащитника',cb:'центрального защитника',rb:'правого защитника',lb:'левого защитника'};
-    const role=roleLabels[intent[0]]||'игрока нужной позиции';
-    return `Ассоциация «${clueTextClean}» указывает на роль ${role}; профиль ${card.name} соответствует этой роли, поэтому запасной алгоритм выбрал эту карту.`;
-  }
-  const clueWords=words(clueTextClean);
-  const clueTag=tags.find(tag=>clueWords.some(word=>tag.toLowerCase().includes(word)||word.includes(tag.toLowerCase())));
-  if(clueTag)return `В ассоциации «${clueTextClean}» есть слово, совпадающее с профилем ${card.name}: «${clueTag}». Это ближайшее найденное совпадение для запасного выбора.`;
-  const profileSummary=tags.slice(0,2).join(', ')||'доступный футбольный профиль';
-  return `Надёжного совпадения между ассоциацией «${clueTextClean}» и карточкой не найдено. Запасной алгоритм выбрал ${card?.name||'эту карту'} по ближайшему доступному профилю: ${profileSummary}.`;
-}
-async function finishPendingBotDecoys(){const p=pendingBotDecoy;if(!p)return;pendingBotDecoy=null;await p;}
-async function finishPendingBotVotes(baseVotes=[]){
-  const p=pendingBotVote;
-  if(!p)return baseVotes.slice();
-  pendingBotVote=null;
-  const botVotes=await p;
-  const out=baseVotes.slice();
-  botVotes.forEach(v=>{if(!out.some(x=>x.voter===v.voter))out.push(v);});
-  return out;
-}
-
-async function aiCompareBots(task, clueText, entries){
-  // Let the thinking UI paint before the Gemini request begins.
-  await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
-  const oldResults=entries.map(e=>{const ranked=e.options.map(c=>({c,score:scoreCard(c,clueText)})).sort((a,b)=>b.score-a.score);return {entry:e,old:ranked[0]?.c||null};});
-  if(!AI_USE_GEMINI || !AI_TEST_MODE)return new Map(oldResults.map(x=>[x.entry.botId,{choiceId:x.old?.id,source:'ScoreCard',old:x.old}]));
-  const payload={task,clue:clueText,bots:oldResults.map(x=>({botId:x.entry.botId,coach:x.entry.coach,personality:coachAiPersonality(x.entry.coach),options:x.entry.options.map(c=>({id:String(c.id),name:c.name,profile:aiCardProfile(c)}))}))};
-  const started=performance.now();
-  try{
-    const r=await fetch('/api/gemini/compare',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
-    const data=await r.json(); if(!r.ok||!data.ok)throw new Error(data.error||`HTTP ${r.status}`);
-    const out=new Map();
-    for(const x of oldResults){
-      const g=(data.result?.results||[]).find(v=>String(v.botId)===String(x.entry.botId));
-      const valid=g&&x.entry.options.some(c=>String(c.id)===String(g.choiceId));
-      const chosen=valid?x.entry.options.find(c=>String(c.id)===String(g.choiceId)):x.old;
-      const source=valid?'Gemini':'Fallback';
-      addAiDebug({coach:x.entry.coach,task,clue:clueText,geminiName:valid?chosen?.name:(g?.choiceId||'некорректный ID'),scoreName:x.old?.name,chosenName:chosen?.name,source:valid?(data.model?`Gemini · ${data.model}`:'Gemini'):'Fallback',confidence:Number.isFinite(Number(g?.confidence))?Number(g.confidence):null,reason:g?.reason||data.result?.errors?.find(v=>String(v.botId)===String(x.entry.botId))?.error||'',latency:Math.round(performance.now()-started)});
-      out.set(x.entry.botId,{choiceId:chosen?.id,source,old:x.old,gemini:g});
-    } return out;
-  }catch(err){
-    for(const x of oldResults)addAiDebug({coach:x.entry.coach,task,clue:clueText,geminiName:'ошибка',scoreName:x.old?.name,chosenName:x.old?.name,source:'Fallback',reason:err.message,latency:Math.round(performance.now()-started)});
-    return new Map(oldResults.map(x=>[x.entry.botId,{choiceId:x.old?.id,source:'Fallback',old:x.old,error:err.message}]));
-  }
-}
-
-const botProfiles = {
-"Achraf Hakimi": {tags:"скорость, правый фланг, ПСЖ, Интер, Реал, Марокко", clues:["Правый фланг, который может превратиться в контратаку","Футболист, для которого слово «скорость» почти профессия","Марокко на ЧМ-2022","Защитник, который играет гораздо выше своей позиции"]},
-"Alessandro Bastoni": {tags:"левый центральный защитник, Интер, Италия, длинный пас, тройка защитников", clues:["Защитник, который любит начинать атаки","Итальянская школа обороны, но с современным пасом","Левша в центре обороны","Когда центральный защитник выглядит как полузащитник"]},
-"Alexis Sanchez": {tags:"Чили, Арсенал, Барселона, Интер, прессинг, скорость", clues:["Чилийская версия слова «энергия»","Арсенал до эпохи Обамеянга","Игрок, который никогда не выключал прессинг","Северный Лондон и огромная самоотдача"]},
-"Álvaro Carreras": {tags:"Испания, Реал, Атлетико, Ювентус, форвард, Евро", clues:["Нападающий, который успел поиграть за два самых принципиальных клуба Мадрида","Испанский форвард с очень длинным списком больших клубов","Человек, которого часто обсуждают даже после забитого гола","Евро и вечные споры вокруг девятки"]},
-"Antoine Griezmann": {tags:"Франция, Атлетико, Барселона, чемпион мира, удар, универсальность", clues:["Чемпион мира, который любит играть между линиями","Француз, которого проще всего представить в Атлетико","Не совсем десятка и не совсем нападающий","Один из самых узнаваемых французов поколения"]},
-"Antonio Rudiger": {tags:"Германия, Челси, Реал, центральный защитник, характер, скорость", clues:["Центральный защитник, которого трудно не заметить","Берлинский характер в Мадриде","Человек, который умеет вывести нападающего из себя","Защитник с репутацией человека без тормозов"]},
-"Arda Guler": {tags:"Турция, Реал, Фенербахче, левая нога, молодой талант, плеймейкер", clues:["Турецкий талант с очень красивой левой ногой","Молодой игрок, которому уже доверяют в Мадриде","Фенербахче и мечта о большом европейском клубе","Один из тех, про кого говорят «будущий топ»"]},
-"Aurelien Tchouameni": {tags:"Франция, Реал, Монако, опорник, полузащита, универсальность", clues:["Французский ответ на вопрос «кто будет играть перед защитой?»","Полузащитник, которого Мадрид взял из Монако","Можно поставить перед защитой, а иногда и в центр обороны","Наследник большой французской школы опорников"]},
-"Bernardo Silva": {tags:"Португалия, Манчестер Сити, Монако, дриблинг, Гвардиола, полузащита", clues:["Маленький мастер больших матчей Гвардиолы","Португалец, который способен играть почти где угодно в полузащите","Монако и Манчестер Сити","Один из самых техничных игроков в команде Гвардиолы"]},
-"Bradley Barcola": {tags:"Франция, ПСЖ, Лион, скорость, левый фланг, молодой", clues:["Французский фланг, который любит убегать за спину","Из Лиона в Париж","Молодой француз с огромной скоростью","Один из новых игроков ПСЖ, которых сложно догнать"]},
-"Bruno Fernandes": {tags:"Португалия, Спортинг, Манчестер Юнайтед, пас, дальний удар, капитан", clues:["Португалец, который почти всегда ищет последний пас","Капитан Манчестер Юнайтед с характером плеймейкера","Спортинг → Манчестер Юнайтед","Дальний удар и рискованный пас"]},
-"Cancelo": {tags:"Португалия, Бенфика, Манчестер Сити, Бавария, Барселона, фланг, инверсия", clues:["Защитник, которого Пеп превратил в отдельный тактический эксперимент","Португалец, который успел пройти через пол-Европы","Фулбек, которому тесно на фланге","Манчестер, Мюнхен и Барселона в одной карьере"]},
-"Casemiro": {tags:"Бразилия, Реал, Манчестер Юнайтед, опорник, отбор, ЛЧ", clues:["Трио Реала, которое выиграло почти всё","Бразильский опорник старой школы","Игрок, для которого отбор — искусство","Реал → Манчестер Юнайтед"]},
-"Christian Eriksen": {tags:"Дания, Тоттенхэм, Интер, Манчестер Юнайтед, стандарты, пас", clues:["Датчанин, который умеет заставить мяч лететь куда угодно со стандарта","Тоттенхэм времён Почеттино","Пас, который выглядит легче, чем есть на самом деле","Камбэк после страшного эпизода"]},
-"Cole Palmer": {tags:"Англия, Челси, Манчестер Сити, левоногий, пенальти, плеймейкер", clues:["Холодный пенальтист из Англии","Из Манчестера в Лондон — и сразу стал главным лицом команды","Левая нога и очень спокойное выражение лица","Игрок, который превратился из таланта Сити в звезду Челси"]},
-"Dani Olmo": {tags:"Испания, Барселона, Лейпциг, Динамо Загреб, плеймейкер, Евро", clues:["Испанец, который вырос футбольно в Хорватии","Лейпциг и Барселона","Один из героев Евро-2024","Игрок, которому комфортно между линиями"]},
-"David de Gea": {tags:"Испания, Манчестер Юнайтед, Атлетико, вратарь, сейвы", clues:["Вратарь, который годами держал Манчестер Юнайтед на плаву","Один на один — и мяч почему-то не проходит","Один из самых известных вратарей АПЛ своего поколения"]},
-"Dayot Upamecano": {tags:"Франция, Бавария, Лейпциг, центральный защитник, скорость", clues:["Французский центральный защитник из Лейпцига в Баварию","Для центрального защитника он подозрительно быстрый","Бавария и сборная Франции","Сила и скорость в центре обороны"]},
-"Declan Rice": {tags:"Англия, Вест Хэм, Арсенал, опорник, отбор, универсальность", clues:["Английский полузащитник, который стал очень дорогим после Вест Хэма","Можно поставить перед защитой и чуть выше","Капитанская школа Вест Хэма","Один из главных трансферов Арсенала последних лет"]},
-"Desire Doue": {tags:"Франция, ПСЖ, Ренн, молодой, дриблинг, атакующий полузащитник", clues:["Молодой француз, который выбрал Париж","Ренн → ПСЖ","Дриблинг и желание постоянно идти вперёд","Один из новых талантов французского футбола"]},
-"Diogo Dalot": {tags:"Португалия, Манчестер Юнайтед, Порту, фулбек, универсальность", clues:["Португалец, который может закрыть оба фланга обороны","Манчестер Юнайтед и Порту","Универсальный фулбек","Защитник, которого часто двигают с фланга на фланг"]},
-"Eder Militao": {tags:"Бразилия, Реал, Порту, центральный защитник, скорость, ЛЧ", clues:["Бразилец в центре обороны Реала","Центральный защитник с форвардской скоростью","Порту → Реал","Один из ключевых защитников мадридского поколения"]},
-"Ederson": {tags:"Бразилия, Манчестер Сити, Бенфика, вратарь, пас, Гвардиола", clues:["Вратарь, которого можно было бы поставить в полузащиту","Лучшая нога среди вратарей — почти клише","Бразилец из системы Гвардиолы","Манчестер Сити и длинная передача через полполя"]},
-"Enzo Fernandez": {tags:"Аргентина, Бенфика, Челси, чемпион мира, полузащита, пас", clues:["Чемпион мира, который уехал из Бенфики в Лондон","Аргентинский полузащитник с отличным первым пасом","Катар-2022 и Челси","Один из героев чемпионского Аргентины"]},
-"Erling Haaland": {tags:"Норвегия, Манчестер Сити, Боруссия Дортмунд, голы, мощь, девятка", clues:["Когда слово «девятка» становится почти физическим объектом","Норвежская машина голов","Дортмунд → Манчестер Сити","Нападающий, которому достаточно одного касания"]},
-"Federico Valverde": {tags:"Уругвай, Реал, полузащита, дальний удар, скорость, универсальность", clues:["Уругваец, который способен пробить с тридцати метров","Мотор мадридской полузащиты","Скорость для полузащитника","Игрок, которого можно поставить почти куда угодно"]},
-"Ferran Torres": {tags:"Испания, Валенсия, Манчестер Сити, Барселона, фланг, движение", clues:["Испанский фланговый игрок с длинным списком больших клубов","Валенсия → Манчестер → Барселона","Движение без мяча","Игрок, которого часто используют на нескольких позициях"]},
-"Foden": {tags:"Англия, Манчестер Сити, Гвардиола, дриблинг, левоногий, академия", clues:["Воспитанник Сити, ставший лицом нового поколения","Англичанин из академии Гвардиолы","Левая нога и игра между линиями","Мальчик из Стокпорта в Манчестер Сити"]},
-"Frenkie de Jong": {tags:"Нидерланды, Аякс, Барселона, полузащита, продвижение мяча", clues:["Нидерландский полузащитник, который любит выносить мяч из-под прессинга","Аякс → Барселона","Один из символов футбола де Йонга","Центр поля и движение с мячом"]},
-"Gabriel Magalhaes": {tags:"Бразилия, Арсенал, Лилль, центральный защитник, голы, воздух", clues:["Бразильский защитник, который опасен на стандартах","Арсенал и Лилль","Центральный защитник с характером","Защитник, которого часто можно увидеть в чужой штрафной"]},
-"Garnacho": {tags:"Аргентина, Манчестер Юнайтед, Атлетико, левый фланг, скорость, молодой", clues:["Аргентинец с манчестерским характером","Молодой игрок, который любит левый фланг","Атлетико → Манчестер Юнайтед","Скорость и игра один в один"]},
-"Gianluigi Donnarumma": {tags:"Италия, Милан, ПСЖ, вратарь, Евро, пенальти", clues:["Итальянский гигант в воротах","Евро и серия пенальти","Милан → Париж","Вратарь, которому доверяют решающие матчи"]},
-"Granit Xhaka": {tags:"Швейцария, Арсенал, Боруссия Менхенгладбах, Байер, дальний удар, характер", clues:["Швейцарец с очень мощной левой ногой","Арсенал → Леверкузен","Полузащитник, которого легко узнать по характеру","Капитанский футбол и дальние удары"]},
-"Hakan Calhanoglu": {tags:"Турция, Милан, Интер, Байер, стандарты, дальний удар", clues:["Один из самых узнаваемых мастеров стандартов","Турок, который стал дирижёром Интера","Миланское дерби и дальние удары","Полузащитник, которого не стоит оставлять у штрафной"]},
-"Harry Kane": {tags:"Англия, Тоттенхэм, Бавария, голы, пас, девятка", clues:["Нападающий, который умеет не только забивать, но и раздавать передачи","Тоттенхэм → Бавария","Капитан Англии","Девятка, которая любит опускаться глубже"]},
-"Jack Grealish": {tags:"Англия, Астон Вилла, Манчестер Сити, дриблинг, фланг, Гвардиола", clues:["Игрок, который умеет задержать мяч на фланге дольше всех","Астон Вилла → Манчестер Сити","Английский дриблёр с узнаваемой манерой","Гвардиола и вечные споры о его роли"]},
-"Jamal Musiala": {tags:"Германия, Бавария, Челси, дриблинг, молодой, полузащита", clues:["Немецкий талант с английским прошлым","Бавария и дриблинг между линиями","Молодой игрок, который любит тесное пространство","Челси → Бавария"]},
-"James Maddison": {tags:"Англия, Лестер, Тоттенхэм, стандарты, пас, плеймейкер", clues:["Англичанин, которого хочется поставить на десять","Лестер → Тоттенхэм","Стандарты и последний пас","Плеймейкер с характером десятки"]},
-"Joao Felix": {tags:"Португалия, Бенфика, Атлетико, Челси, Барселона, атакующий", clues:["Португалец с очень длинным списком больших клубов","Бенфика → Атлетико","Игрок, которого постоянно пытаются найти на правильной позиции","Талант, который уже успел поменять несколько футбольных домов"]},
-"Joshua Kimmich": {tags:"Германия, Бавария, Лейпциг, полузащита, правый фланг, стандарты", clues:["Немец, способный играть и в центре, и справа","Бавария и универсальность","Игрок, которого можно назвать футбольным универсалом","Капитанская роль и стандарты"]},
-"Jude Bellingham": {tags:"Англия, Боруссия Дортмунд, Реал, полузащита, голы, молодой", clues:["Англичанин, который очень рано уехал в Германию","Дортмунд → Мадрид","Полузащитник, который постоянно оказывается в штрафной","Один из главных игроков нового поколения"]},
-"Julian Alvarez": {tags:"Аргентина, Ривер Плейт, Манчестер Сити, Атлетико, чемпион мира, форвард", clues:["Чемпион мира, который начинал в Ривер Плейт","Аргентинец из системы Гвардиолы","Форвард, которому не обязательно быть единственной девяткой","Манчестер Сити → Мадрид"]},
-"Kevin De Bruyne": {tags:"Бельгия, Манчестер Сити, Вольфсбург, Челси, пас, дальний удар", clues:["Пас, который будто заранее знает, куда побежит партнёр","Бельгийский дирижёр Манчестер Сити","Вольфсбург → Манчестер","Один из лучших распасовщиков своего поколения"]},
-"Khvicha Kvaratskhelia": {tags:"Грузия, Наполи, ПСЖ, дриблинг, левый фланг, чемпион Италии", clues:["Грузинский фланг, который взорвал Серию А","Неаполь и неожиданный чемпионский сезон","Дриблинг на левом фланге","Игрок, который сделал Грузию заметнее на футбольной карте"]},
-"Kylian Mbappe": {tags:"Франция, Монако, ПСЖ, Реал, скорость, чемпион мира, голы", clues:["Чемпион мира, который начал путь в Монако","Французская суперзвезда и мадридская мечта","Скорость, после которой защитник обычно уже опоздал","Париж → Мадрид"]},
-"Lamine Yamal": {tags:"Испания, Барселона, молодой, левоногий, дриблинг, Евро", clues:["Самый молодой герой большого турнира","Барселона и невероятно ранний дебют","Левая нога и правый фланг","Подросток, которому уже доверяют на уровне сборной"]},
-"Lautaro Martinez": {tags:"Аргентина, Интер, Расинг, чемпион мира, форвард, прессинг", clues:["Аргентинский форвард из Интера","Чемпион мира, который много работает без мяча","Интер и капитанская повязка","Нападающий, которому важен прессинг"]},
-"Manuel Neuer": {tags:"Германия, Бавария, Шальке, вратарь, либеро, чемпион мира", clues:["Вратарь, который первым сделал роль либеро-вратаря массовой","Германия и Бавария","Чемпион мира 2014","Если вратарь выходит почти к центру поля"]},
-"Marcus Rashford": {tags:"Англия, Манчестер Юнайтед, скорость, левый фланг, голы, академия", clues:["Манчестерский воспитанник с очень быстрым стартом","Игрок, которого чаще всего представляешь слева","Скорость и контратака","Академия Манчестер Юнайтед"]},
-"Marquinhos": {tags:"Бразилия, ПСЖ, Рома, центральный защитник, капитан, универсальность", clues:["Бразильский капитан Парижа","Рома → ПСЖ","Защитник, который умеет играть и в центре, и справа","Один клуб на большую часть европейской карьеры"]},
-"Mason Greenwood": {tags:"Англия, Манчестер Юнайтед, Хетафе, Марсель, удар, левоногий", clues:["Левая нога, которой не нужен большой замах","Английский форвард из академии Юнайтед","Игрок, который умеет бить обеими ногами","Манчестер → Испания → Франция"]},
-"Mateo Kovacic": {tags:"Хорватия, Реал, Челси, Манчестер Сити, полузащита, дриблинг", clues:["Хорватский полузащитник, который любит выносить мяч через прессинг","Реал → Челси → Манчестер Сити","Дриблинг из глубины","Игрок, которому комфортно в больших командах"]},
-"Matheus Cunha": {tags:"Бразилия, Вулверхэмптон, Атлетико, Лейпциг, форвард, техника", clues:["Бразилец с необычной траекторией по Европе","Атлетико и Вулверхэмптон","Форвард, который любит отходить за мячом","Техника вместо классического образа девятки"]},
-"Moises Caicedo": {tags:"Эквадор, Брайтон, Челси, опорник, отбор, полузащита", clues:["Эквадорский полузащитник, который вырос в Брайтоне","Брайтон → Челси","Отбор и объём работы","Молодой опорник из Южной Америки"]},
-"Morgan Rogers": {tags:"Англия, Астон Вилла, Манчестер Сити, Мидлсбро, фланг, молодой", clues:["Англичанин, который раскрылся в Астон Вилле","Манчестер Сити в начале карьеры","Молодой фланговый игрок","Игрок, который прошёл через Мидлсбро"]},
-"Nuno Mendes": {tags:"Португалия, Спортинг, ПСЖ, левый фланг, скорость, молодой", clues:["Португалец, который быстро уехал из Спортинга в Париж","Очень быстрый левый защитник","Спортинг → ПСЖ","Фланг, скорость и молодость"]},
-"Odegaard": {tags:"Норвегия, Реал, Арсенал, Ренн, плеймейкер, капитан, левая нога", clues:["Норвежский капитан Арсенала","Подросток, которого когда-то подписал Реал","Арсенал и левая нога","Путь от вундеркинда до капитана"]},
-"Ollie Watkins": {tags:"Англия, Астон Вилла, Брентфорд, форвард, скорость, прессинг", clues:["Английский нападающий, раскрывшийся в Астон Вилле","Скорость и движение за спину","Брентфорд → Астон Вилла","Форвард, который много работает без мяча"]},
-"Omar Marmoush": {tags:"Египет, Айнтрахт, Манчестер Сити, Штутгарт, скорость, форвард", clues:["Египетский нападающий, который выстрелил в Германии","Айнтрахт → Манчестер Сити","Скорость и игра слева","Футболист, которого заметили после большого сезона в Бундеслиге"]},
-"Ousmane Dembele": {tags:"Франция, Боруссия, Барселона, ПСЖ, скорость, дриблинг, чемпион мира", clues:["Чемпион мира, который любит играть на обоих флангах","Боруссия → Барселона → ПСЖ","Одна из самых быстрых ног поколения","Французский дриблёр с очень необычной траекторией карьеры"]},
-"Pedri": {tags:"Испания, Барселона, Лас-Пальмас, полузащита, пас, Евро", clues:["Испанский полузащитник, которого сравнивали с Хави и Иньестой","Лас-Пальмас → Барселона","Тихая техника в центре поля","Один из главных молодых полузащитников Испании"]},
-"Pedro Porro": {tags:"Испания, Тоттенхэм, Спортинг, Жирона, правый фланг, атака", clues:["Правый защитник, который больше похож на вингера","Спортинг → Тоттенхэм","Испанец с очень атакующим профилем","Жирона и Лиссабон в одной карьере"]},
-"Raphinha": {tags:"Бразилия, Лидс, Барселона, Ренн, правый фланг, прессинг, дриблинг", clues:["Бразилец, который прошёл путь от Лидса до Барселоны","Правый фланг и очень агрессивный прессинг","Ренн → Лидс → Барселона","Игрок, который любит идти в обводку"]},
-"Rasmus Hojlund": {tags:"Дания, Копенгаген, Аталанта, Манчестер Юнайтед, форвард, скорость", clues:["Датская девятка, прошедшая через Италию","Копенгаген → Аталанта → Манчестер","Высокий форвард с неожиданной скоростью","Молодой нападающий из Скандинавии"]},
-"Rayan Cherki": {tags:"Франция, Лион, ПСЖ, Манчестер Сити, дриблинг, плеймейкер", clues:["Лионский талант с очень свободной манерой игры","Французский технарь, которому нравится рисковать","Дриблинг и нестандартные решения","Один из самых ярких воспитанников Лиона"]},
-"Reece James": {tags:"Англия, Челси, академия, правый фланг, кросс, капитан", clues:["Воспитанник Челси на правом фланге","Кроссы и мощь","Англичанин, выросший внутри Челси","Правый защитник с капитанским характером"]},
-"Rodri": {tags:"Испания, Вильярреал, Атлетико, Манчестер Сити, опорник, пас, Евро, Золотой мяч", clues:["Полузащитник, который однажды получил Золотой мяч","Испания и Манчестер Сити","Игрок, который управляет темпом из глубины","Евро-2024 и контроль центра поля"]},
-"Rodrygo": {tags:"Бразилия, Реал, Сантос, правый фланг, ЛЧ, дриблинг", clues:["Бразилец, который особенно любит важные матчи Лиги чемпионов","Сантос → Реал","Правый фланг Мадрида","Молодой бразилец с большими голами в Европе"]},
-"Ronald Araujo": {tags:"Уругвай, Барселона, Бостон Ривер, центральный защитник, сила, скорость", clues:["Уругвайская сила в центре обороны Барселоны","Защитник, который любит дуэли один в один","Барселона и сборная Уругвая","Скорость и физика центрального защитника"]},
-"Ruben Dias": {tags:"Португалия, Бенфика, Манчестер Сити, центральный защитник, лидерство", clues:["Португалец, который стал лидером обороны Сити","Бенфика → Манчестер","Центральный защитник с капитанским характером","Один из символов обороны команды Гвардиолы"]},
-"Sandro Tonali": {tags:"Италия, Брешиа, Милан, Ньюкасл, полузащита, дальний пас", clues:["Итальянец, которого сравнивали с Пирло","Брешиа → Милан → Ньюкасл","Полузащитник с характером старой школы","Длинный пас и игра из глубины"]},
-"Scott McTominay": {tags:"Шотландия, Манчестер Юнайтед, Наполи, полузащита, голы, физика", clues:["Шотландец, который неожиданно стал регулярно забивать","Академия Манчестер Юнайтед → Наполи","Полузащитник с габаритами нападающего","Шотландия и Неаполь"]},
-"Thibaut Courtois": {tags:"Бельгия, Генк, Атлетико, Челси, Реал, вратарь, рост, сейвы", clues:["Бельгийский гигант в воротах Реала","Атлетико → Челси → Реал","Вратарь, который закрывает почти весь верхний угол","Один из самых высоких топ-вратарей поколения"]},
-"Trent Alexander-Arnold": {tags:"Англия, Ливерпуль, Реал, правый защитник, пас, стандарты, кросс", clues:["Правый защитник, который раздаёт передачи как полузащитник","Ливерпуль и знаменитые диагонали","Английский мастер стандартов","Футболист, изменивший представление о роли правого защитника"]},
-"Viktor Gyokeres": {tags:"Швеция, Спортинг, Ковентри, Брайтон, форвард, мощь, скорость", clues:["Шведский форвард, который взорвал Португалию","Ковентри → Спортинг","Сила плюс скорость","Один из самых обсуждаемых нападающих нового поколения"]},
-"Vinicius Junior": {tags:"Бразилия, Фламенго, Реал, левый фланг, скорость, дриблинг, ЛЧ", clues:["Бразильский левый фланг Мадрида","Фламенго → Реал","Скорость и один в один","Игрок, который из сырого таланта превратился в звезду Лиги чемпионов"]},
-"Vitinha": {tags:"Португалия, ПСЖ, Порту, полузащита, пас, прессинг", clues:["Португалец, который стал дирижёром центра ПСЖ","Порту → Париж","Невысокий полузащитник с очень чистым первым пасом","Контроль мяча под прессингом"]},
-"William Saliba": {tags:"Франция, Арсенал, Сент-Этьен, Ницца, центральный защитник, скорость", clues:["Французский защитник, который раскрылся в Арсенале","Скорость для центрального защитника","Сент-Этьен → Ницца → Арсенал","Один из главных молодых защитников АПЛ"]},
-"Youri Tielemans": {tags:"Бельгия, Андерлехт, Монако, Лестер, Астон Вилла, полузащита, дальний удар", clues:["Бельгиец с длинной карьерой в Англии","Андерлехт → Монако → Лестер","Дальний удар из центра поля","Полузащитник, который уже давно играет на высоком уровне"]},
-"Wout Weghorst": {tags:"Нидерланды, Вольфсбург, Бернли, Бешикташ, Манчестер Юнайтед, форвард, рост", clues:["Очень высокий нидерландский форвард","Игрок, которого часто выпускают для изменения рисунка игры","Вольфсбург и Бернли","Нападающий, которого невозможно не заметить в штрафной"]},
-"Xabi Alonso": {tags:"Испания, Ливерпуль, Реал, Бавария, полузащита, тренер", clues:["Игрок, который позже стал тренером","Ливерпуль → Реал → Бавария","Испанский дирижёр с дальним пасом","Номер 14 и длинные передачи"]},
-"Luka Modric": {tags:"Хорватия, Реал, Тоттенхэм, полузащита, пас, Золотой мяч", clues:["Хорват, который получил Золотой мяч","Тоттенхэм → Реал","Полузащитник, которого легко узнать по внешности и манере паса","Человек, который пережил несколько поколений Мадрида"]}
-};
-
-let deck = pool.map((x,i)=>({id:i,name:x[0],country:x[1],clubs:x[2],tags:(botProfiles[x[0]]?.tags || ""),clues:(botProfiles[x[0]]?.clues || []),img:x[4]}));
-
-// Карта после раздачи не возвращается в колоду.
-// Поэтому один и тот же футболист не может одновременно появиться
-// у нескольких игроков или снова выпасть после того, как его сыграли.
-let availableIds = [];
-function shuffle(a){return [...a].sort(()=>Math.random()-.5)}
-function draw(n){
-  let picked = shuffle(availableIds).slice(0,n);
-  availableIds = availableIds.filter(id=>!picked.includes(id));
-  return picked.map(id=>deck.find(c=>c.id===id));
-}
-availableIds = deck.map(c=>c.id);
-players.forEach(p=>p.hand=draw(6));
-
-function humanPlayerCount(){
-  return Math.max(1, onlinePlayers.length || 1);
-}
-
-function botBounds(){
-  const humans=humanPlayerCount();
-  return {min:Math.max(0,4-humans), max:Math.max(0,8-humans)};
-}
-
-function getRoundOptions(){
-  const totalPlayers = Math.max(4, Math.min(8, humanPlayerCount() + Number(selectedBotCount || 0)));
-  if(totalPlayers===4) return [{value:"8",label:"8"},{value:"16",label:"16"},{value:"end",label:"Все карты"}];
-  if(totalPlayers===5) return [{value:"10",label:"10"},{value:"20",label:"20"},{value:"end",label:"Все карты"}];
-  if(totalPlayers===6) return [{value:"12",label:"12"},{value:"end",label:"Все карты"}];
-  if(totalPlayers===7) return [{value:"14",label:"14"},{value:"end",label:"Все карты"}];
-  return [{value:"end",label:"Все карты"}];
-}
-
-function updateBotOptions(){
- const select=document.getElementById("botCount");
- if(!select) return;
- const bounds=botBounds();
- let value=Number(selectedBotCount);
- if(!Number.isFinite(value)) value=bounds.min;
- value=Math.max(bounds.min,Math.min(bounds.max,value));
- selectedBotCount=value;
- select.innerHTML=Array.from({length:bounds.max-bounds.min+1},(_,i)=>bounds.min+i).map(n=>`<option value="${n}">${n}</option>`).join("");
- select.value=String(value);
-}
-
-function updateRoundOptions(){
- updateBotOptions();
- const rounds=document.getElementById("roundMode");
- if(!rounds) return;
- const options=getRoundOptions();
- const current=selectedRoundMode;
- rounds.innerHTML=options.map(o=>`<option value="${o.value}">${o.label}</option>`).join("");
- if(options.some(o=>o.value===current)) rounds.value=current;
- else {
-   selectedRoundMode=options[0].value;
-   rounds.value=selectedRoundMode;
- }
+  if(intent.length&&card&&roleCompatible(cardFactProfile(card),intent))return 'По роли эта карта точнее остальных подходит к замыслу ведущего.';
+  return 'Среди доступных вариантов эта карта показалась запасному алгоритму наиболее подходящей.';
 }
 
 function renderLobby(){
@@ -2695,7 +2505,10 @@ async function chooseHumanDecoy(i){
   submissions.push({id:picked.id,owner:0});
   render();
   // Gemini уже выбирает карты ботов в фоне. Ждём его только в момент перехода к голосованию.
+  const waitingBots=players.filter((p,idx)=>p.isBot&&idx!==storyteller);
+  if(waitingBots.length)setThinking(true,'decoy',waitingBots.map(p=>p.name));
   await finishPendingBotDecoys();
+  setThinking(false);
   if(!ensurePlayerDecoySubmissions(clue)){setAiBackgroundStatus(false);render();return;}
   setAiBackgroundStatus(false);
   submissions=shuffle(submissions); phase='vote'; render();
@@ -2709,7 +2522,10 @@ async function vote(i){
   if(!submissions[i]||submissions[i].owner===0)return;
   const humanVote={voter:0,card:i};
   if(!pendingBotVote)startBotVoteBackground();
+  const waitingBots=players.filter((p,idx)=>p.isBot&&idx!==storyteller);
+  if(waitingBots.length)setThinking(true,'vote',waitingBots.map(p=>p.name));
   const votes=await finishPendingBotVotes([humanVote]);
+  setThinking(false);
   setAiBackgroundStatus(false);
   aiBusy=true; calculate(votes); aiBusy=false;
 }
@@ -2727,13 +2543,17 @@ async function botOnlyVoting(){
   botOnlyVotingPromise=(async()=>{
     try{
       if(!pendingBotVote)startBotVoteBackground();
+      const waitingBots=players.filter((p,idx)=>p.isBot&&idx!==storyteller);
+      if(waitingBots.length)setThinking(true,'vote',waitingBots.map(p=>p.name));
       const votes=await finishPendingBotVotes([]);
+      setThinking(false);
       if(phase!=="vote")return;
       setAiBackgroundStatus(false);
       aiBusy=true;
       try{calculate(votes);}finally{aiBusy=false;}
     }finally{
       setAiBackgroundStatus(false);
+      setThinking(false);
     }
   })();
   try{return await botOnlyVotingPromise;}
@@ -2947,7 +2767,9 @@ async function mpStartRoundIfBot(){
     phase='decoy'; mpSync(); render();
     const humans=mpHumanPlayers(true);
     if(!humans.length){
-      await finishPendingBotDecoys(); setAiBackgroundStatus(false); if(onlineIsHost)sendOnline({type:'gameAiStatus',show:false});
+      const waitingBots=players.filter((p,idx)=>p.isBot&&idx!==storyteller);
+      if(waitingBots.length){setThinking(true,'decoy',waitingBots.map(p=>p.name));if(onlineIsHost)sendOnline({type:'gameThinking',show:true,kind:'decoy',names:waitingBots.map(p=>p.name)});}
+      await finishPendingBotDecoys(); setThinking(false);if(onlineIsHost)sendOnline({type:'gameThinking',show:false});setAiBackgroundStatus(false); if(onlineIsHost)sendOnline({type:'gameAiStatus',show:false});
       if(!ensurePlayerDecoySubmissions(clue)){mpSync();render();return;}
       submissions=shuffle(submissions); phase='vote'; mpSync(); render(); startMpBotVoteBackground();
     }
@@ -2965,13 +2787,16 @@ function startMpBotVoteBackground(){
   if(!mpHumanPlayers(true).length){
     void (async()=>{
       try{
+        setThinking(true,'vote',bots.map(x=>x.p.name));if(onlineIsHost)sendOnline({type:'gameThinking',show:true,kind:'vote',names:bots.map(x=>x.p.name)});
         const votes=await finishPendingBotVotes([]);
+        setThinking(false);if(onlineIsHost)sendOnline({type:'gameThinking',show:false});
         if(phase!=='vote')return;
         setAiBackgroundStatus(false); if(onlineIsHost)sendOnline({type:'gameAiStatus',show:false});
         aiBusy=true;
         try{calculate(votes);}finally{aiBusy=false;}
         mpSync(); render();
       }catch(err){
+        setThinking(false);if(onlineIsHost)sendOnline({type:'gameThinking',show:false});
         setAiBackgroundStatus(false); if(onlineIsHost)sendOnline({type:'gameAiStatus',show:false});
         console.error('Bot-only voting failed:',err);
       }
@@ -2987,7 +2812,10 @@ async function mpAddBotVotesIfReady(){
     return;
   }
   if(!pendingBotVote)startMpBotVoteBackground();
+  const waitingBots=players.filter((p,idx)=>p.isBot&&idx!==storyteller);
+  if(waitingBots.length){setThinking(true,'vote',waitingBots.map(p=>p.name));if(onlineIsHost)sendOnline({type:'gameThinking',show:true,kind:'vote',names:waitingBots.map(p=>p.name)});}
   const votes=await finishPendingBotVotes(humanVotes);
+  setThinking(false);if(onlineIsHost)sendOnline({type:'gameThinking',show:false});
   setAiBackgroundStatus(false); if(onlineIsHost)sendOnline({type:'gameAiStatus',show:false});
   aiBusy=true; calculate(votes); aiBusy=false; mpSync(); render();
 }
@@ -3035,7 +2863,10 @@ async function mpChooseDecoy(actor,i){
   submissions.push({id:c.id,owner:actor});
   const humans=mpHumanPlayers(true);
   if(humans.every(idx=>submissions.some(s=>s.owner===idx))){
+    const waitingBots=players.filter((p,idx)=>p.isBot&&idx!==storyteller);
+    if(waitingBots.length){setThinking(true,'decoy',waitingBots.map(p=>p.name));if(onlineIsHost)sendOnline({type:'gameThinking',show:true,kind:'decoy',names:waitingBots.map(p=>p.name)});}
     await finishPendingBotDecoys(); setAiBackgroundStatus(false); if(onlineIsHost)sendOnline({type:'gameAiStatus',show:false});
+    setThinking(false);if(onlineIsHost)sendOnline({type:'gameThinking',show:false});
     if(!ensurePlayerDecoySubmissions(clue)){mpSync();render();return;}
     submissions=shuffle(submissions); phase='vote';
     mpSync(); render(); startMpBotVoteBackground();
