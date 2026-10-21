@@ -125,50 +125,40 @@ async function geminiCompare(body){
   }));
   if(!bots.some(b=>b.options.length)) throw new Error('У ботов нет доступных карт для выбора.');
   const task=isDecoy?'выбери карту-обманку из своей руки для ассоциации':'угадай, какая из отправленных карт является секретной картой ведущего';
-  const basePrompt=`Ты — ИИ-мозг бота в футбольной игре ассоциаций.\n\nЗадача: ${task}.\nАссоциация: «${clip(body.clue,500)}»\n\nПравила:\n- Понимай смысл ассоциации как футбольную идею, а не только совпадение слов.\n- Используй футбольные факты из профилей карт.\n- Явные факты важнее слабых тематических совпадений.\n- Учитывай отрицательную совместимость: ассоциация про чувство штрафной не должна автоматически вести к защитнику или вратарю.\n- Не выдумывай факты, которых нет в профилях, кроме общеизвестных футбольных фактов.\n- Характер тренера влияет на предпочтения и тай-брейки, но не должен перебивать очевидное смысловое соответствие.\n- Для каждого бота верни ровно один существующий option id из его собственного списка.\n- Никогда не возвращай ID из списка другого бота.\n- Ответ должен быть максимально коротким: только структурированный JSON без объяснения вне JSON.\n\nБоты и варианты:\n${JSON.stringify(bots)}`;
-  const properties={botId:{type:'string'},choiceId:{type:'string'},confidence:{type:'number'}};
-  if(!isDecoy) properties.reason={type:'string'};
-  const payload={
-    contents:[{role:'user',parts:[{text:basePrompt}]}],
-    generationConfig:{
-      responseMimeType:'application/json',
-      responseSchema:{type:'object',properties:{results:{type:'array',items:{type:'object',properties,required:['botId','choiceId','confidence']}}},required:['results']},
-      thinkingConfig:{thinkingLevel:isDecoy?'minimal':'low'}
-    }
-  };
-
-  // RelayModels is the primary provider when RELAY_API_KEY is configured.
-  // There is no model-by-model chain during a normal request, so switching providers
-  // does not add latency unless the primary provider actually fails.
+  const baseRules=`Ты — ИИ-мозг одного бота в футбольной игре ассоциаций.\nЗадача: ${task}.\nАссоциация: «${clip(body.clue,500)}»\nИспользуй футбольные факты из профилей и выбирай по смыслу. Не выдумывай факты. Ниже приведены только допустимые варианты именно этого бота. Скопируй choiceId дословно из выбранного варианта. Верни только JSON.`;
   const models=[];
   if(RELAY_API_KEY) models.push({provider:'relay',name:RELAY_MODEL});
   if(GEMINI_API_KEY) models.push({provider:'google',name:GEMINI_MODEL || 'gemini-3.8-flash'});
-  const validate=result=>{
-    const rows=Array.isArray(result?.results)?result.results:[];
-    return bots.every(bot=>{
-      const matches=rows.filter(row=>String(row?.botId)===bot.botId);
-      return matches.length===1 && bot.options.some(option=>option.id===String(matches[0]?.choiceId));
-    });
-  };
-  let lastError=null;
-  for(const model of models){
+  if(!models.length) throw new Error('AI provider is not configured');
+  const properties={choiceId:{type:'string'},confidence:{type:'number'}};
+  if(!isDecoy) properties.reason={type:'string'};
+  const results=await Promise.all(bots.map(async bot=>{
+    if(!bot.options.length)return null;
+    const optionsJson=JSON.stringify(bot.options);
+    let lastError=null;
     for(let attempt=0;attempt<2;attempt++){
+      const prompt=`${baseRules}\nБот: ${bot.coach}. ${bot.personality}\nДопустимые варианты: ${optionsJson}${attempt?'\nПредыдущий ответ был недопустим. Повтори выбор и верни choiceId ровно как в списке.':''}`;
+      const payload={contents:[{role:'user',parts:[{text:prompt}]}],generationConfig:{responseMimeType:'application/json',responseSchema:{type:'object',properties,required:['choiceId','confidence']},thinkingConfig:{thinkingLevel:isDecoy?'minimal':'low'}}};
       try{
-        if(model.provider==='google') payload.generationConfig.thinkingConfig={thinkingLevel:isDecoy?'minimal':'low'};
-        payload.contents[0].parts[0].text=basePrompt+(attempt?'\n\nИсправление: предыдущий ответ содержал недопустимый выбор. Верни по одному объекту для каждого botId и только choiceId из его options. Проверь каждый ID.':'');
-        const out=await callAiModel(model,payload);
-        if(validate(out.result))return out;
-        lastError=new Error('ИИ вернул choiceId, которого нет в списке доступных карт.');
-      }catch(err){
-        lastError=err;
-        if(attempt===0) continue;
-        break;
-      }
+        const out=await callAiModel(models[0],payload);
+        const choiceId=String(out.result?.choiceId??'');
+        if(bot.options.some(option=>option.id===choiceId))return {botId:bot.botId,choiceId,confidence:out.result.confidence,reason:out.result.reason,model:out.model};
+        lastError=new Error('ИИ вернул ID вне списка этого бота.');
+      }catch(err){lastError=err;}
     }
-    // Keep provider fallback behavior for transport/provider failures only.
-    if(lastError?.message?.includes('choiceId')) break;
-  }
-  throw lastError || new Error('AI provider is not configured');
+    // Try the reserve provider once when available; its result is still checked against this bot's exact options.
+    if(models[1] && !lastError?.message?.includes('вне списка')){
+      try{
+        const prompt=`${baseRules}\nБот: ${bot.coach}. ${bot.personality}\nДопустимые варианты: ${optionsJson}\nВерни choiceId строго из списка.`;
+        const payload={contents:[{role:'user',parts:[{text:prompt}]}],generationConfig:{responseMimeType:'application/json',responseSchema:{type:'object',properties,required:['choiceId','confidence']},thinkingConfig:{thinkingLevel:isDecoy?'minimal':'low'}}};
+        const out=await callAiModel(models[1],payload);const choiceId=String(out.result?.choiceId??'');
+        if(bot.options.some(option=>option.id===choiceId))return {botId:bot.botId,choiceId,confidence:out.result.confidence,reason:out.result.reason,model:out.model};
+      }catch(err){lastError=err;}
+    }
+    return {botId:bot.botId,error:lastError?.message||'ИИ не выбрал допустимую карту.'};
+  }));
+  const validResults=results.filter(row=>row&&row.choiceId);
+  return {result:{results:validResults,errors:results.filter(row=>row?.error)},model:validResults[0]?.model||models[0].name,provider:models[0].provider==='relay'?'RelayModels':'Google Gemini'};
 }
 
 const server=http.createServer(async (req,res)=>{
