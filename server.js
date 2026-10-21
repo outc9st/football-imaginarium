@@ -172,8 +172,17 @@ const server=http.createServer(async (req,res)=>{
     const coach=clip(body.coach,80);
     const personality=clip(body.personality,900);
     const profile=clip(body.profile,1800);
-    const prompt=`Ты придумываешь ассоциацию для футбольной версии Имаджинариума.\n\nЗагаданная карта: ${clip(card.name,120)}\nПрофиль футболиста: ${profile}\n${personality}\n\nПридумай ОДНУ короткую, выразительную ассоциацию для этой карты. Она должна быть полезной в игре: не называть футболиста и не быть почти прямой подсказкой через уникальное имя, клуб, страну или точный факт, который однозначно выдаёт карту. Предпочтительны футбольная идея, метафора, игровое качество, характерный эпизод или образ. Избегай банальных ассоциаций вроде «хороший игрок», «талант», «скорость» без дополнительного смысла. Длина — примерно 2–8 слов. Манера может учитывать профиль тренера, но ассоциация должна оставаться понятной другим игрокам.\n\nВерни только JSON с одним полем clue.`;
-    const payload={contents:[{role:'user',parts:[{text:prompt}]}],generationConfig:{responseMimeType:'application/json',responseSchema:{type:'object',properties:{clue:{type:'string'}},required:['clue']},thinkingConfig:{thinkingLevel:'low'}}};
+    const rawLens=body.coachLens||{};
+    const coachLens={
+      style:(Array.isArray(rawLens.style)?rawLens.style:[]).slice(0,8).map(x=>clip(x,80)),
+      focus:(Array.isArray(rawLens.focus)?rawLens.focus:[]).slice(0,12).map(x=>clip(x,80)),
+      voice:(Array.isArray(rawLens.voice)?rawLens.voice:[]).slice(0,5).map(x=>clip(x,120)),
+      playerAnchor:(Array.isArray(rawLens.playerAnchor)?rawLens.playerAnchor:[]).slice(0,5).map(x=>clip(x,140)),
+      sampleAssociations:(Array.isArray(rawLens.sampleAssociations)?rawLens.sampleAssociations:[]).slice(0,8).map(x=>clip(x,140))
+    };
+    const prompt=`Ты придумываешь ассоциацию для футбольной версии Имаджинариума.\n\nЗагаданная карта: ${clip(card.name,120)}\nПрофиль футболиста: ${profile}\nТренер: ${coach}\nМанера и характер тренера: ${personality}\nТренерская оптика для этой карты: ${JSON.stringify(coachLens)}\n\nПридумай одну естественную ассоциацию длиной 2–8 слов. Она должна одновременно опираться на конкретное качество футболиста и на футбольную оптику именно этого тренера: его стиль, тактический фокус, любимую манеру игры или известное отношение к этому игроку. Не ограничивайся общим словом вроде «характер», «талант» или «скорость». Используй примеры и личные якоря только как подсказки для мысли; не копируй их автоматически. Если прямой связи тренера с игроком нет, найди правдоподобное пересечение стиля тренера и фактов в профиле.\n\nНе называй игрока или тренера. Не используй клуб, страну, уникальный переход или точный факт, который сразу раскрывает карту. Не выдумывай личную историю или мнение тренера: поле coachLink должно кратко объяснить, какое реальное качество карты связано с указанной оптикой тренера. Ассоциация должна быть понятна другим игрокам и звучать как короткая живая мысль.\n\nВерни только JSON вида {\"clue\":\"2–8 слов\",\"coachLink\":\"короткое объяснение связи\"}.`;
+    const clueSchema={type:'string'};
+    const payload={contents:[{role:'user',parts:[{text:prompt}]}],generationConfig:{responseMimeType:'application/json',responseSchema:{type:'object',properties:{clue:clueSchema,coachLink:{type:'string'}},required:['clue','coachLink']},thinkingConfig:{thinkingLevel:'low'}}};
     let lastError=null;
     const models=[];
     if(RELAY_API_KEY) models.push({provider:'relay',name:RELAY_MODEL});
