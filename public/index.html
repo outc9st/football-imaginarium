@@ -357,7 +357,7 @@ async function aiCompareBots(task, clueText, entries){
       const valid=g&&x.entry.options.some(c=>String(c.id)===String(g.choiceId));
       const chosen=valid?x.entry.options.find(c=>String(c.id)===String(g.choiceId)):x.old;
       const source=valid?'Gemini':'Fallback';
-      addAiDebug({coach:x.entry.coach,task,clue:clueText,geminiName:valid?chosen?.name:(g?.choiceId||'некорректный ID'),scoreName:x.old?.name,chosenName:chosen?.name,source:valid?(data.model?`Gemini · ${data.model}`:'Gemini'):'Fallback',confidence:Number.isFinite(Number(g?.confidence))?Number(g.confidence):null,reason:g?.reason||'',latency:Math.round(performance.now()-started)});
+      addAiDebug({coach:x.entry.coach,task,clue:clueText,geminiName:valid?chosen?.name:(g?.choiceId||'некорректный ID'),scoreName:x.old?.name,chosenName:chosen?.name,source:valid?(data.model?`Gemini · ${data.model}`:'Gemini'):'Fallback',confidence:Number.isFinite(Number(g?.confidence))?Number(g.confidence):null,reason:g?.reason||data.result?.errors?.find(v=>String(v.botId)===String(x.entry.botId))?.error||'',latency:Math.round(performance.now()-started)});
       out.set(x.entry.botId,{choiceId:chosen?.id,source,old:x.old,gemini:g});
     } return out;
   }catch(err){
