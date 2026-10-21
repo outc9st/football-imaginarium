@@ -282,7 +282,7 @@ function renderAiDebug(){
   const el=document.getElementById('aiDebugBody'); if(!el)return;
   el.innerHTML=aiDebugEntries.slice(-24).reverse().map(e=>{
     const cls=String(e.source||'').startsWith('Gemini')?'ai-ok':(e.source==='Fallback'?'ai-fallback':'ai-bad');
-    return `<div class="ai-entry"><b>${escapeHtml(e.coach)}</b> · ${escapeHtml(e.task)}<br><span>«${escapeHtml(e.clue)}»</span><br>Gemini: <b>${escapeHtml(e.geminiName||'—')}</b> ${e.confidence!=null?`(${Math.round(e.confidence*100)}%)`:''}<br>ScoreCard: <b>${escapeHtml(e.scoreName||'—')}</b><br><span class="${cls}">Фактический выбор: <b>${escapeHtml(e.chosenName||'—')}</b> · ${e.source}${e.latency?` · ${e.latency} ms`:''}</span>${e.reason?`<br><span class="muted">${escapeHtml(e.reason)}</span>`:''}</div>`;
+    return `<div class="ai-entry"><b>${escapeHtml(e.coach)}</b> · ${escapeHtml(e.task)}<br><span>«${escapeHtml(e.clue)}»</span><br>Gemini: <b>${escapeHtml(e.geminiName||'—')}</b> ${Number.isFinite(e.confidence)?`(${Math.round(e.confidence*100)}%)`:''}<br>ScoreCard: <b>${escapeHtml(e.scoreName||'—')}</b><br><span class="${cls}">Фактический выбор: <b>${escapeHtml(e.chosenName||'—')}</b> · ${e.source}${e.latency?` · ${e.latency} ms`:''}</span>${e.reason?`<br><span class="muted">${escapeHtml(e.reason)}</span>`:''}</div>`;
   }).join('') || '<div class="muted">Пока решений нет.</div>';
 }
 function addAiDebug(e){aiDebugEntries.push(e);if(aiDebugEntries.length>40)aiDebugEntries.shift();renderAiDebug();if(AI_TEST_MODE)toggleAiDebug(true);}
@@ -357,7 +357,7 @@ async function aiCompareBots(task, clueText, entries){
       const valid=g&&x.entry.options.some(c=>String(c.id)===String(g.choiceId));
       const chosen=valid?x.entry.options.find(c=>String(c.id)===String(g.choiceId)):x.old;
       const source=valid?'Gemini':'Fallback';
-      addAiDebug({coach:x.entry.coach,task,clue:clueText,geminiName:valid?chosen?.name:(g?.choiceId||'некорректный ID'),scoreName:x.old?.name,chosenName:chosen?.name,source:valid?(data.model?`Gemini · ${data.model}`:'Gemini'):'Fallback',confidence:Number(g?.confidence),reason:g?.reason||'',latency:Math.round(performance.now()-started)});
+      addAiDebug({coach:x.entry.coach,task,clue:clueText,geminiName:valid?chosen?.name:(g?.choiceId||'некорректный ID'),scoreName:x.old?.name,chosenName:chosen?.name,source:valid?(data.model?`Gemini · ${data.model}`:'Gemini'):'Fallback',confidence:Number.isFinite(Number(g?.confidence))?Number(g.confidence):null,reason:g?.reason||'',latency:Math.round(performance.now()-started)});
       out.set(x.entry.botId,{choiceId:chosen?.id,source,old:x.old,gemini:g});
     } return out;
   }catch(err){
@@ -756,12 +756,15 @@ function renderStory(){
  } else if(phase==="clueGenerating"){
    el.innerHTML=`<div class="notice"><b>${escapeHtml(players[storyteller]?.name||'Ведущий')} придумывает ассоциацию…</b><br><span class="muted">ИИ ищет короткую, но неочевидную подсказку.</span></div>`;
  } else if(phase==="clue"){
-   el.innerHTML=`<div class="notice">Выбери ассоциацию для выбранной карты.</div><input id="clueInput" placeholder="Например: «лучший удар в мировом футболе»"><button onclick="submitClue()">Загадать</button>`;
+   const secret=players[storyteller]?.hand?.[selected];
+   el.innerHTML=`<div class="notice"><b>Секретная карта выбрана.</b> Теперь придумай ассоциацию; после отправки остальные игроки начнут выбирать карты.</div>${secret?card(secret,'',true):''}<input id="clueInput" placeholder="Например: «лучший удар в мировом футболе»"><button onclick="submitClue()">Загадать</button>`;
  } else if(phase==="decoy"){
    if(storyteller===0){
      // Ведущий-человек сразу проходит к своему этапу ассоциации.
    } else {
-     el.innerHTML=`<div class="notice"><b>${clue}</b><br><span class="muted">Ведущий уже загадал. Теперь выбери из своей руки футболиста-обманку.</span></div><div class="hand">${players[0].hand.map((c,i)=>card(c,`chooseHumanDecoy(${i})`)).join("")}</div>`;
+     const ownSubmission=submissions.find(s=>s.owner===0);
+     if(ownSubmission){const picked=deck.find(c=>c.id===ownSubmission.id);el.innerHTML=`<div class="notice"><b>${clue}</b><br><b>Твоя карта-обманка принята.</b><br><span class="muted">Боты выбирают карты… Ждём завершения выбора.</span></div>${picked?card(picked,'',true):''}`;}
+     else el.innerHTML=`<div class="notice"><b>${clue}</b><br><span class="muted">Ведущий уже загадал. Теперь выбери из своей руки футболиста-обманку.</span></div><div class="hand">${players[0].hand.map((c,i)=>card(c,`chooseHumanDecoy(${i})`)).join("")}</div>`;
    }
  } else if(phase==="vote"){
    el.innerHTML=`<div class="notice"><b>Ассоциация:</b> ${clue}<br><span class="muted">${storyteller===0 ? "Ты ведущий — не голосуй. Боты голосуют..." : "Выбери карту, которую, по-твоему, загадал ведущий. Свою карту выбирать нельзя."}</span></div><div class="submitted">${submissions.map((s,i)=>{let c=deck.find(x=>x.id===s.id);let own=s.owner===0;return card(c,storyteller===0?``:(own?``:`vote(${i})`),storyteller===0||own,storyteller!==0&&own)}).join("")}</div>`;
@@ -796,7 +799,7 @@ function selectSecret(i){selected=i;secretId=players[0].hand[i].id;phase="clue";
 async function submitClue(){
  let v=document.getElementById("clueInput")?.value.trim(); if(!v||aiBusy)return;
  clue=v; submissions=[{id:secretId,owner:0}];
- const entries=players.filter((p,i)=>i!==0).map((p,i)=>({botId:String(i),coach:p.name,options:p.hand}));
+ const entries=players.map((p,i)=>({p,i})).filter(x=>x.i!==0&&x.p.isBot).map(x=>({botId:String(x.i),coach:x.p.name,options:x.p.hand}));
  pendingBotDecoy=prepareBotDecoys(entries,clue);
  if(entries.length){
    setThinking(true,'decoy',entries.map(e=>e.coach));
@@ -2996,11 +2999,14 @@ function renderStory(){
       el.innerHTML=`<div class="notice">${players[storyteller]?.isBot?'Бот-ведущий выбирает карту и ассоциацию…':'Ведущий выбирает карту и придумывает ассоциацию…'}</div>`;
     }
   }else if(phase==='clue'){
-    if(myTurn && myHuman) el.innerHTML=`<div class="notice">Выбери ассоциацию для выбранной карты.</div><input id="clueInput" placeholder="Например: «лучший удар в мировом футболе»"><button onclick="submitClue()">Загадать</button>`;
+    if(myTurn && myHuman){const secret=mpCardById(secretId);el.innerHTML=`<div class="notice"><b>Секретная карта выбрана.</b> Придумай ассоциацию; после отправки другие игроки начнут выбирать карты.</div>${secret?card(secret,'',true):''}<input id="clueInput" placeholder="Например: «лучший удар в мировом футболе»"><button onclick="submitClue()">Загадать</button>`;}
     else el.innerHTML=`<div class="notice">Ведущий придумывает ассоциацию…</div>`;
   }else if(phase==='decoy'){
     if(!myTurn && myHuman && !submissions.some(s=>s.owner===me)){
       el.innerHTML=`<div class="notice"><b>${clue}</b><br><span class="muted">Выбери из своей руки футболиста-обманку.</span></div><div class="hand">${players[me].hand.map((c,i)=>card(c,`chooseHumanDecoy(${i})`,submissions.some(s=>s.id===c.id))).join('')}</div>`;
+    }else if(!myTurn && myHuman && submissions.some(s=>s.owner===me)){
+      const picked=mpCardById(submissions.find(s=>s.owner===me).id);const chosen=mpHumanPlayers(true).filter(i=>submissions.some(s=>s.owner===i)).length;const total=mpHumanPlayers(true).length;
+      el.innerHTML=`<div class="notice"><b>${clue}</b><br><b>Твоя карта-обманка принята.</b> Выбрали ${chosen} из ${total}; ждём остальных игроков.</div>${picked?card(picked,'',true):''}`;
     }else{
       const chosen=mpHumanPlayers(true).filter(i=>submissions.some(s=>s.owner===i)).length;
       const total=mpHumanPlayers(true).length;
