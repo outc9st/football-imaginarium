@@ -116,6 +116,7 @@ async function callAiModel(model,payload){
   return callGeminiModel(model.name,payload);
 }
 
+function normalizeClue(value){return String(value||'').toLowerCase().replace(/ё/g,'е').replace(/[^\p{L}\p{N}]+/gu,' ').trim()}
 function reasonMentionsClue(reason,clue){
   const normalize=value=>String(value||'').toLowerCase().replace(/ё/g,'е').replace(/[^\p{L}\p{N}]+/gu,' ').trim();
   const stopWords=new Set(['это','или','для','что','как','при','его','ее','они','так','весь','этот','этой','который','которая','которые','любой','любая']);
@@ -130,12 +131,12 @@ async function geminiCompare(body){
   const isDecoy=body.task==='decoy';
   const bots=(Array.isArray(body.bots)?body.bots:[]).slice(0,8).map(b=>({
     botId:String(b.botId),coach:clip(b.coach,80),personality:clip(b.personality,700),
-    options:(Array.isArray(b.options)?b.options:[]).slice(0,12).map(o=>({id:String(o.id),name:clip(o.name,120),profile:clip(o.profile,700)}))
+    options:(Array.isArray(b.options)?b.options:[]).slice(0,12).map(o=>({id:String(o.id),name:clip(o.name,120),...(isDecoy?{profile:clip(o.profile,700)}:{})}))
   }));
   if(!bots.some(b=>b.options.length)) throw new Error('У ботов нет доступных карт для выбора.');
   const task=isDecoy?'выбери карту-обманку из своей руки для ассоциации':'угадай, какая из отправленных карт является секретной картой ведущего';
-  const explanationRule=isDecoy?'':'Для голосования добавь reason из 1–2 коротких предложений (до 240 знаков). Обязательно начни с ключевого слова или образа из ассоциации, процитировав его дословно в кавычках, затем объясни, какая конкретная особенность выбранного футболиста из его профиля соответствует этому образу. Объясняй выбор через ассоциацию и футболиста. Не используй тренерский стиль или личность угадывающего как аргумент. Если ассоциация слишком короткая или не даёт надёжной связи, честно скажи это и объясни, что именно в профиле стало ближайшей зацепкой; не выдумывай связь и факты.';
-  const baseRules=`Ты — ИИ-мозг одного бота в футбольной игре ассоциаций.\nЗадача: ${task}.\nАссоциация: «${clip(body.clue,500)}»\nИспользуй футбольные факты из профилей и выбирай по смыслу. Не выдумывай факты. Ниже приведены только допустимые варианты именно этого бота. Скопируй choiceId дословно из выбранного варианта. ${explanationRule}\nВерни только JSON.`;
+  const explanationRule=isDecoy?'':'Для голосования добавь reason одним коротким предложением (до 160 знаков). Самостоятельно сравни варианты и объясни, почему выбранная карта лучше всего подходит к ассоциации, опираясь на своё футбольное понимание. Не цитируй и не повторяй ассоциацию. Не ссылайся на профиль или описание футболиста, не перечисляй данные карточки и не выдумывай факты. Не используй стиль тренера-угадывающего.';
+  const baseRules=`Ты — ИИ-мозг одного бота в футбольной игре ассоциаций.\nЗадача: ${task}.\nАссоциация: «${clip(body.clue,500)}»\nОцени варианты самостоятельно по ассоциации и своему футбольному пониманию. Ниже приведены только допустимые варианты именно этого бота. Скопируй choiceId дословно из выбранного варианта. ${explanationRule}\nВерни только JSON.`;
   const models=[];
   if(RELAY_API_KEY) models.push({provider:'relay',name:RELAY_MODEL});
   if(GEMINI_API_KEY) models.push({provider:'google',name:GEMINI_MODEL || 'gemini-3.8-flash'});
@@ -148,26 +149,26 @@ async function geminiCompare(body){
     const optionsJson=JSON.stringify(bot.options);
     let lastError=null;
     for(let attempt=0;attempt<2;attempt++){
-      const botContext=isDecoy?`\nБот: ${bot.coach}. ${bot.personality}`:'\nТы угадывающий игрок. Обоснуй выбор только связью ассоциации с конкретным качеством выбранного футболиста.';
-      const prompt=`${baseRules}${botContext}\nДопустимые варианты: ${optionsJson}${attempt?'\nПредыдущий ответ был недопустим. Выбери choiceId строго из списка и обязательно свяжи reason с конкретным ключевым словом ассоциации, процитировав его дословно.':''}`;
+      const botContext=isDecoy?`\nБот: ${bot.coach}. ${bot.personality}`:'\nТы угадывающий игрок. Самостоятельно сравни карты по ассоциации; не опирайся на личность тренера-угадывающего.';
+      const prompt=`${baseRules}${botContext}\nДопустимые варианты: ${optionsJson}${attempt?'\nПредыдущий ответ был недопустим. Выбери choiceId строго из списка и напиши короткое объяснение без цитирования ассоциации и ссылок на профиль футболиста.':''}`;
       const payload={contents:[{role:'user',parts:[{text:prompt}]}],generationConfig:{responseMimeType:'application/json',responseSchema:{type:'object',properties,required},thinkingConfig:{thinkingLevel:isDecoy?'minimal':'low'}}};
       try{
         const out=await callAiModel(models[0],payload);
         const choiceId=String(out.result?.choiceId??'');
         const reason=String(out.result?.reason||'').trim();
-        if(bot.options.some(option=>option.id===choiceId) && (isDecoy || (reason.length>=25&&reasonMentionsClue(reason,body.clue))))return {botId:bot.botId,choiceId,confidence:out.result.confidence,reason,model:out.model};
-        lastError=new Error(bot.options.some(option=>option.id===choiceId)?'Объяснение не связало выбранную карту с ключевым словом ассоциации.':'ИИ вернул ID вне списка этого бота.');
+        if(bot.options.some(option=>option.id===choiceId) && (isDecoy || (reason.length>=18&&!/[«"“][^»"”]{1,100}[»"”]/.test(reason)&&!normalizeClue(reason).includes(normalizeClue(body.clue)))))return {botId:bot.botId,choiceId,confidence:out.result.confidence,reason,model:out.model};
+        lastError=new Error(bot.options.some(option=>option.id===choiceId)?'Объяснение слишком короткое.':'ИИ вернул ID вне списка этого бота.');
       }catch(err){lastError=err;}
     }
     // Try the reserve provider once when available; its result is still checked against this bot's exact options.
     if(models[1] && !lastError?.message?.includes('вне списка')){
       try{
-        const botContext=isDecoy?`\nБот: ${bot.coach}. ${bot.personality}`:'\nТы угадывающий игрок. Обоснуй выбор только связью ассоциации с конкретным качеством выбранного футболиста.';
+        const botContext=isDecoy?`\nБот: ${bot.coach}. ${bot.personality}`:'\nТы угадывающий игрок. Самостоятельно сравни карты по ассоциации; не опирайся на личность тренера-угадывающего.';
         const prompt=`${baseRules}${botContext}\nДопустимые варианты: ${optionsJson}\nВерни choiceId строго из списка.`;
         const payload={contents:[{role:'user',parts:[{text:prompt}]}],generationConfig:{responseMimeType:'application/json',responseSchema:{type:'object',properties,required},thinkingConfig:{thinkingLevel:isDecoy?'minimal':'low'}}};
         const out=await callAiModel(models[1],payload);const choiceId=String(out.result?.choiceId??'');
         const reason=String(out.result?.reason||'').trim();
-        if(bot.options.some(option=>option.id===choiceId) && (isDecoy || (reason.length>=25&&reasonMentionsClue(reason,body.clue))))return {botId:bot.botId,choiceId,confidence:out.result.confidence,reason,model:out.model};
+        if(bot.options.some(option=>option.id===choiceId) && (isDecoy || (reason.length>=18&&!/[«"“][^»"”]{1,100}[»"”]/.test(reason)&&!normalizeClue(reason).includes(normalizeClue(body.clue)))))return {botId:bot.botId,choiceId,confidence:out.result.confidence,reason,model:out.model};
       }catch(err){lastError=err;}
     }
     return {botId:bot.botId,error:lastError?.message||'ИИ не выбрал допустимую карту.'};
