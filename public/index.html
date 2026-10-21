@@ -298,21 +298,32 @@ function aiCardProfile(c){
   const clues=(botProfiles[c.name]?.clues||[]).slice(0,8).join(' | ');
   return `${c.name}; ${tags}; ${clues}`.slice(0,900);
 }
+function coachAiLens(c,coach){
+  return {
+    style:coachStyles[coach]||[],
+    focus:coachClueBias[coach]||[],
+    voice:coachVoice[coach]||[],
+    playerAnchor:(coachPlayerAnchors[coach]?.[c.name]||[]).slice(0,5),
+    sampleAssociations:coachLensClues(c,coach).slice(0,8)
+  };
+}
 async function aiGenerateClue(c,coach){
   const fallback=botClue(c,coach);
   if(!AI_USE_GEMINI||!AI_TEST_MODE)return fallback;
   const started=performance.now();
   try{
     await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
-    const payload={coach,personality:coachAiPersonality(coach),card:{name:c.name},profile:aiCardProfile(c)};
+    const payload={coach,personality:coachAiPersonality(coach),coachLens:coachAiLens(c,coach),card:{name:c.name},profile:aiCardProfile(c)};
     const r=await fetch('/api/gemini/clue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
     const data=await r.json();
     if(!r.ok||!data.ok)throw new Error(data.error||`HTTP ${r.status}`);
     const raw=String(data.result?.clue||'').trim();
-    const valid=raw&&raw.length<=90&&!containsPlayerName(raw,c.name)&&!clueLooksIdentifying(raw,c)&&!genericAssociationPenalty.includes(clueKey(raw));
+    const coachLink=String(data.result?.coachLink||'').trim();
+    const wordCount=raw?raw.split(/\s+/).length:0;
+    const valid=raw&&wordCount>=2&&wordCount<=8&&raw.length<=90&&coachLink.length>=8&&!containsPlayerName(raw,c.name)&&!clueLooksIdentifying(raw,c)&&!genericAssociationPenalty.includes(clueKey(raw));
     const chosen=valid?raw:fallback;
     if(valid){clueHistory.push(chosen);usedClues.add(clueKey(chosen));rememberClue(chosen);if(clueHistory.length>80)clueHistory.shift();}
-    addAiDebug({coach,task:'clue',clue:chosen,geminiName:valid?chosen:'некорректная ассоциация',scoreName:fallback,chosenName:chosen,source:valid?(data.model?`Gemini · ${data.model}`:'Gemini'):'Fallback',latency:Math.round(performance.now()-started)});
+    addAiDebug({coach,task:'clue',clue:chosen,geminiName:valid?chosen:'некорректная ассоциация',scoreName:fallback,chosenName:chosen,source:valid?(data.model?`Gemini · ${data.model}`:'Gemini'):'Fallback',reason:valid?`Привязка к тренеру: ${coachLink}`:'ИИ не дал короткую ассоциацию с объяснённой тренерской оптикой.',latency:Math.round(performance.now()-started)});
     return chosen;
   }catch(err){
     addAiDebug({coach,task:'clue',clue:fallback,geminiName:'ошибка',scoreName:fallback,chosenName:fallback,source:'Fallback',reason:err.message,latency:Math.round(performance.now()-started)});
@@ -2903,6 +2914,23 @@ function startMpBotVoteBackground(){
   const entries=bots.map(x=>({botId:String(x.idx),coach:x.p.name,options:submissions.filter(s=>s.owner!==x.idx).map(s=>mpCardById(s.id)).filter(Boolean)}));
   pendingBotVote=prepareBotVotes(entries,[]);
   setAiBackgroundStatus(true,'Боты уже голосуют…'); if(onlineIsHost)sendOnline({type:'gameAiStatus',show:true,text:'Боты уже голосуют…'});
+  // In a room with one human storyteller and only bots, no human vote will arrive
+  // to trigger mpAddBotVotesIfReady. Finish the round as soon as bot votes resolve.
+  if(!mpHumanPlayers(true).length){
+    void (async()=>{
+      try{
+        const votes=await finishPendingBotVotes([]);
+        if(phase!=='vote')return;
+        setAiBackgroundStatus(false); if(onlineIsHost)sendOnline({type:'gameAiStatus',show:false});
+        aiBusy=true;
+        try{calculate(votes);}finally{aiBusy=false;}
+        mpSync(); render();
+      }catch(err){
+        setAiBackgroundStatus(false); if(onlineIsHost)sendOnline({type:'gameAiStatus',show:false});
+        console.error('Bot-only voting failed:',err);
+      }
+    })();
+  }
 }
 async function mpAddBotVotesIfReady(){
   if(phase!=='vote')return;
