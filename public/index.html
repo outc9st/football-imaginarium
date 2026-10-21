@@ -250,9 +250,11 @@ let pendingBotClue=null;
 const thinkingLines={decoy:['Подбирают карту-обманку','Ищут подходящую связь','Сравнивают свои карты'],vote:['Сопоставляют ассоциацию с картами','Пытаются понять замысел','Выбирают, кому верить'],clue:['Придумывают ассоциацию','Ищут точный образ','Подбирают хорошую подсказку'],thinking:['Принимают решение','Анализируют варианты','Думают над ходом']};
 function setAiBackgroundStatus(show,text='Боты уже думают…'){const el=document.getElementById('aiBackgroundStatus');const t=document.getElementById('aiBackgroundText');if(!el)return;if(!show){el.classList.remove('show');return;}if(t)t.textContent=text;el.classList.add('show');}
 function thinkingPersonLabel(name){
-  const n=String(name||'').trim();
-  const aliases={'Хосеп':'Пеп','Юрген':'Клопп','Микель':'Артета','Карло':'Анчелотти','Жозе':'Моуринью','Зинедин':'Зидан','Эрик':'Тен Хаг','Луис':'Луис Энрике','Роберто':'Де Дзерби','Ханси':'Флик','Юлиан':'Нагельсманн','Рубен':'Аморим','Антонио':'Конте','Диего':'Симеоне','Томас':'Тухель','Унаи':'Эмери','Маурисио':'Почеттино','Венсан':'Компани','Оле':'Сульшер','Хаби':'Хаби Алонсо'};
-  return aliases[n]||n;
+  return String(name||'').trim().split(/\s+/)[0]||'';
+}
+function displayPlayerName(player){
+  const name=String(player?.name||'').trim();
+  return player?.isBot?thinkingPersonLabel(name):name;
 }
 function setThinking(show,kind='thinking',names=[]){
   const overlay=document.getElementById('thinkingOverlay'); if(!overlay)return;
@@ -283,7 +285,7 @@ function renderAiDebug(){
   const el=document.getElementById('aiDebugBody'); if(!el)return;
   el.innerHTML=aiDebugEntries.slice(-24).reverse().map(e=>{
     const cls=String(e.source||'').startsWith('Gemini')?'ai-ok':(e.source==='Fallback'?'ai-fallback':'ai-bad');
-    return `<div class="ai-entry"><b>${escapeHtml(e.coach)}</b> · ${escapeHtml(e.task)}<br><span>«${escapeHtml(e.clue)}»</span><br>Gemini: <b>${escapeHtml(e.geminiName||'—')}</b> ${Number.isFinite(e.confidence)?`(${Math.round(e.confidence*100)}%)`:''}<br>ScoreCard: <b>${escapeHtml(e.scoreName||'—')}</b><br><span class="${cls}">Фактический выбор: <b>${escapeHtml(e.chosenName||'—')}</b> · ${e.source}${e.latency?` · ${e.latency} ms`:''}</span>${e.reason?`<br><span class="muted">${escapeHtml(e.reason)}</span>`:''}</div>`;
+    return `<div class="ai-entry"><b>${escapeHtml(thinkingPersonLabel(e.coach))}</b> · ${escapeHtml(e.task)}<br><span>«${escapeHtml(e.clue)}»</span><br>Gemini: <b>${escapeHtml(e.geminiName||'—')}</b> ${Number.isFinite(e.confidence)?`(${Math.round(e.confidence*100)}%)`:''}<br>ScoreCard: <b>${escapeHtml(e.scoreName||'—')}</b><br><span class="${cls}">Фактический выбор: <b>${escapeHtml(e.chosenName||'—')}</b> · ${e.source}${e.latency?` · ${e.latency} ms`:''}</span>${e.reason?`<br><span class="muted">${escapeHtml(e.reason)}</span>`:''}</div>`;
   }).join('') || '<div class="muted">Пока решений нет.</div>';
 }
 function addAiDebug(e){aiDebugEntries.push(e);if(aiDebugEntries.length>40)aiDebugEntries.shift();renderAiDebug();if(AI_TEST_MODE)toggleAiDebug(true);}
@@ -355,8 +357,28 @@ function ensurePlayerDecoySubmissions(clueText){
 async function prepareBotVotes(entries,baseVotes=[]){
   const decisions=await aiCompareBots('vote',clue,entries);
   const votes=baseVotes.slice();
-  entries.forEach(e=>{const d=decisions.get(e.botId);const j=submissions.findIndex(s=>String(s.id)===String(d?.choiceId));if(j>=0&&!votes.some(v=>v.voter===Number(e.botId))){const reason=String(d?.gemini?.reason||'').trim()||(d?.source==='ScoreCard'||d?.source==='Fallback'?'Запасной выбор: профиль карты лучше совпал с ассоциацией.':'');votes.push({voter:Number(e.botId),card:j,reason:reason.slice(0,240)});}});
+  entries.forEach(e=>{const d=decisions.get(e.botId);const j=submissions.findIndex(s=>String(s.id)===String(d?.choiceId));if(j>=0&&!votes.some(v=>v.voter===Number(e.botId))){const reason=String(d?.gemini?.reason||'').trim()||(d?.source==='ScoreCard'||d?.source==='Fallback'?scoreCardVoteReason(d?.old||e.options.find(c=>String(c.id)===String(d?.choiceId)),clue):'');votes.push({voter:Number(e.botId),card:j,reason:reason.slice(0,240)});}});
   return votes;
+}
+function scoreCardVoteReason(card,clueText){
+  const clueTextClean=String(clueText||'').trim();
+  const tags=card?allPlayerTags(card):[];
+  const cue=semanticTagsForClue(clueTextClean).find(signal=>tags.some(tag=>tagMatches(tag,signal)));
+  if(cue){
+    const profileFact=tags.find(tag=>tagMatches(tag,cue))||cue;
+    return `Ассоциация «${clueTextClean}» указывает на «${cue}»; в профиле ${card.name} отмечено «${profileFact}», поэтому запасной выбор пал на эту карту.`;
+  }
+  const intent=clueRoleIntent(clueTextClean);
+  if(intent.length&&card&&roleCompatible(cardFactProfile(card),intent)){
+    const roleLabels={keeper:'вратаря',defender:'защитника',attacker:'нападающего',forward:'форварда',midfielder:'полузащитника',dm:'опорного полузащитника',am:'атакующего полузащитника',cb:'центрального защитника',rb:'правого защитника',lb:'левого защитника'};
+    const role=roleLabels[intent[0]]||'игрока нужной позиции';
+    return `Ассоциация «${clueTextClean}» указывает на роль ${role}; профиль ${card.name} соответствует этой роли, поэтому запасной алгоритм выбрал эту карту.`;
+  }
+  const clueWords=words(clueTextClean);
+  const clueTag=tags.find(tag=>clueWords.some(word=>tag.toLowerCase().includes(word)||word.includes(tag.toLowerCase())));
+  if(clueTag)return `В ассоциации «${clueTextClean}» есть слово, совпадающее с профилем ${card.name}: «${clueTag}». Это ближайшее найденное совпадение для запасного выбора.`;
+  const profileSummary=tags.slice(0,2).join(', ')||'доступный футбольный профиль';
+  return `Надёжного совпадения между ассоциацией «${clueTextClean}» и карточкой не найдено. Запасной алгоритм выбрал ${card?.name||'эту карту'} по ближайшему доступному профилю: ${profileSummary}.`;
 }
 async function finishPendingBotDecoys(){const p=pendingBotDecoy;if(!p)return;pendingBotDecoy=null;await p;}
 async function finishPendingBotVotes(baseVotes=[]){
@@ -693,7 +715,7 @@ function render(){
        status.innerHTML=onlineIsHost ? "Комната создана. Отправь код друзьям." : "Ты подключён к комнате. Ждём запуска игры.";
      }
      const list=onlinePlayers.length?onlinePlayers:[{id:onlinePlayerId,name:playerNickname,isHost:onlineIsHost}];
-     document.getElementById("roomPlayers").innerHTML=list.map(p=>`<div class="room-player"><span>● ${p.name}${p.id===onlinePlayerId?' <span class="muted">(ты)</span>':''}</span><span class="role">${p.isHost?"👑 Создатель":"Игрок"}</span></div>`).join("");
+     document.getElementById("roomPlayers").innerHTML=list.map(p=>`<div class="room-player"><span>● ${thinkingPersonLabel(p.name)}${p.id===onlinePlayerId?' <span class="muted">(ты)</span>':''}</span><span class="role">${p.isHost?"👑 Создатель":"Игрок"}</span></div>`).join("");
      const botSelect=document.getElementById("botCount");
      const roundSelect=document.getElementById("roundMode");
      const isHost=onlineIsHost;
@@ -721,7 +743,7 @@ function render(){
        const title=r>=3?`Раунд: +${r} очка — победа`: (r>=1?`Раунд: +${r} очко — ничья`:`Раунд: +0 очков — поражение`);
        return `<span class="form-dot ${cls}" title="${title}">${r}</span>`;
      }).join("");
-     return `<tr><td>${i+1}. ${p.name}</td><td>${p.playedRounds||0}</td><td><b>${p.score}</b></td><td><div class="form">${formHtml}</div></td><td>${i===0?"🏆 Победитель":""}</td></tr>`;
+     return `<tr><td>${i+1}. ${displayPlayerName(p)}</td><td>${p.playedRounds||0}</td><td><b>${p.score}</b></td><td><div class="form">${formHtml}</div></td><td>${i===0?"🏆 Победитель":""}</td></tr>`;
    }).join("");
    document.getElementById("storyTitle").textContent="Финал";
    document.getElementById("storyBody").innerHTML=`<div class="notice"><b>Игра завершена!</b><br>Итоговая таблица выше.</div><button onclick="restartGame()">Начать заново ↻</button>`;
@@ -736,7 +758,7 @@ function render(){
      const title=r>=3?`Раунд: +${r} очка — победа`:(r>=1?`Раунд: +${r} очко — ничья`:`Раунд: +0 очков — поражение`);
      return `<span class="form-dot ${cls}" title="${title}">${r}</span>`;
    }).join("");
-   return `<tr><td>${i+1}. ${p.name}</td><td>${p.playedRounds||0}</td><td>${p.score}</td><td><div class="form-list">${formHtml||'<span class="muted">—</span>'}</div></td><td>${p===players[storyteller]?"Ведущий":"Игрок"}</td></tr>`;
+   return `<tr><td>${i+1}. ${displayPlayerName(p)}</td><td>${p.playedRounds||0}</td><td>${p.score}</td><td><div class="form-list">${formHtml||'<span class="muted">—</span>'}</div></td><td>${p===players[storyteller]?"Ведущий":"Игрок"}</td></tr>`;
  }).join("");
  renderStory();
 }
@@ -746,12 +768,12 @@ function card(c,onclick="",disabled=false,selfCard=false){
  </button>`;
 }
 function voteReasonChip(v){
- const name=players[v.voter]?.name||'Игрок';
+ const name=displayPlayerName(players[v.voter])||'Игрок';
  return `<span class="vote-chip"><b>${escapeHtml(name)}</b>${v.reason?`<span class="vote-reason">${escapeHtml(v.reason)}</span>`:''}</span>`;
 }
 function renderStory(){
  let el=document.getElementById("storyBody");
- document.getElementById("storyTitle").textContent=storyteller===0 ? "Твоя ассоциация" : `${players[storyteller].name} загадывает`;
+ document.getElementById("storyTitle").textContent=storyteller===0 ? "Твоя ассоциация" : `${displayPlayerName(players[storyteller])} загадывает`;
  if(phase==="story"){
    if(storyteller===0){
     el.innerHTML=`<div class="muted">Выбери одного футболиста из своей руки. Он будет секретной картой.</div><div class="hand">${players[0].hand.map((c,i)=>card(c,`selectSecret(${i})`)).join("")}</div>`;
@@ -784,10 +806,10 @@ function renderStory(){
         }
       })();
     }
-    el.innerHTML=`<div class="notice"><b>${escapeHtml(sp.name)} придумывает ассоциацию…</b><br><span class="muted">ИИ подбирает подсказку к своей карте.</span></div>`;
+    el.innerHTML=`<div class="notice"><b>${escapeHtml(thinkingPersonLabel(sp.name))} придумывает ассоциацию…</b><br><span class="muted">ИИ подбирает подсказку к своей карте.</span></div>`;
    }
  } else if(phase==="clueGenerating"){
-   el.innerHTML=`<div class="notice"><b>${escapeHtml(players[storyteller]?.name||'Ведущий')} придумывает ассоциацию…</b><br><span class="muted">ИИ ищет короткую, но неочевидную подсказку.</span></div>`;
+   el.innerHTML=`<div class="notice"><b>${escapeHtml(displayPlayerName(players[storyteller])||'Ведущий')} придумывает ассоциацию…</b><br><span class="muted">ИИ ищет короткую, но неочевидную подсказку.</span></div>`;
  } else if(phase==="clue"){
    const secret=players[storyteller]?.hand?.[selected];
    el.innerHTML=`<div class="notice"><b>Секретная карта выбрана.</b> Теперь придумай ассоциацию; после отправки остальные игроки начнут выбирать карты.</div>${secret?card(secret,'',true):''}<input id="clueInput" placeholder="Например: «лучший удар в мировом футболе»"><button onclick="submitClue()">Загадать</button>`;
@@ -817,7 +839,7 @@ function renderStory(){
      const c=deck.find(x=>x.id===s.id);
      const isSecret = s.id===secretId;
      const voters = voteNames[i] || [];
-     const owner = players[s.owner]?.name || "";
+     const owner = displayPlayerName(players[s.owner]) || "";
      return `<div class="result-card ${isSecret?'secret-card':''}">
        ${card(c,"",true)}
        <div class="result-card-label">${isSecret ? "★ ЗАГАДАННАЯ КАРТА" : "КАРТА-ОБМАНКА"}</div>
@@ -3057,7 +3079,7 @@ function renderStory(){
   const me=mpLocalPlayerIndex;
   const myTurn=me>=0 && me===storyteller;
   const myHuman=me>=0 && mpIsHuman(me);
-  document.getElementById('storyTitle').textContent=myTurn?'Твоя ассоциация':`${players[storyteller]?.name||'Игрок'} загадывает`;
+  document.getElementById('storyTitle').textContent=myTurn?'Твоя ассоциация':`${displayPlayerName(players[storyteller])||'Игрок'} загадывает`;
   if(phase==='story'){
     if(myTurn && myHuman){
       el.innerHTML=`<div class="muted">Выбери одного футболиста из своей руки. Он будет секретной картой.</div><div class="hand">${players[me].hand.map((c,i)=>card(c,`selectSecret(${i})`)).join('')}</div>`;
@@ -3091,7 +3113,7 @@ function renderStory(){
     const correct=submissions.findIndex(s=>s.id===secretId);
     const voteNames={};
     votesThisRound.forEach(v=>{(voteNames[v.card]||(voteNames[v.card]=[])).push(v);});
-    const cardsHtml=submissions.map((s,i)=>{const c=mpCardById(s.id),isSecret=s.id===secretId,voters=voteNames[i]||[];return `<div class="result-card ${isSecret?'secret-card':''}">${card(c,'',true)}<div class="result-card-label">${isSecret?'★ ЗАГАДАННАЯ КАРТА':'КАРТА-ОБМАНКА'}</div><div class="result-owner">${isSecret?'Загадывал':'Предложил'}: <b>${escapeHtml(players[s.owner]?.name||'')}</b></div><div class="result-votes"><b>Голосовали:</b> ${voters.length?voters.map(voteReasonChip).join(''):'<span class="muted">никто</span>'}</div></div>`;}).join('');
+    const cardsHtml=submissions.map((s,i)=>{const c=mpCardById(s.id),isSecret=s.id===secretId,voters=voteNames[i]||[];return `<div class="result-card ${isSecret?'secret-card':''}">${card(c,'',true)}<div class="result-card-label">${isSecret?'★ ЗАГАДАННАЯ КАРТА':'КАРТА-ОБМАНКА'}</div><div class="result-owner">${isSecret?'Загадывал':'Предложил'}: <b>${escapeHtml(displayPlayerName(players[s.owner])||'')}</b></div><div class="result-votes"><b>Голосовали:</b> ${voters.length?voters.map(voteReasonChip).join(''):'<span class="muted">никто</span>'}</div></div>`;}).join('');
     const fixedLimit=selectedRoundMode!=='end'?Number(selectedRoundMode):Infinity;
     const isFinal=round>=fixedLimit || availableIds.length<players.length;
     el.innerHTML=`<div class="notice"><b>Ассоциация:</b> ${clue}<br><b>Правильную карту выбрали:</b> ${votesThisRound.filter(v=>submissions[v.card]?.id===secretId).length} из ${players.length-1}</div><div class="result-grid">${cardsHtml}</div>${isFinal?'<button onclick="showFinalTable()">Показать итоговую таблицу →</button>':'<button onclick="nextRound()">Следующий раунд →</button>'}`;
