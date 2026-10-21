@@ -245,6 +245,7 @@ let thinkingTimer=null;
 let thinkingStartedAt=0;
 let pendingBotDecoy=null;
 let pendingBotVote=null;
+let botOnlyVotingPromise=null;
 let pendingBotClue=null;
 const thinkingLines={decoy:['Подбирают карту-обманку','Ищут подходящую связь','Сравнивают свои карты'],vote:['Сопоставляют ассоциацию с картами','Пытаются понять замысел','Выбирают, кому верить'],clue:['Придумывают ассоциацию','Ищут точный образ','Подбирают хорошую подсказку'],thinking:['Принимают решение','Анализируют варианты','Думают над ходом']};
 function setAiBackgroundStatus(show,text='Боты уже думают…'){const el=document.getElementById('aiBackgroundStatus');const t=document.getElementById('aiBackgroundText');if(!el)return;if(!show){el.classList.remove('show');return;}if(t)t.textContent=text;el.classList.add('show');}
@@ -2665,11 +2666,22 @@ function startBotVoteBackground(){
 }
 
 async function botOnlyVoting(){
+  if(botOnlyVotingPromise)return botOnlyVotingPromise;
   if(phase!=="vote"||storyteller!==0||aiBusy)return;
-  if(!pendingBotVote)startBotVoteBackground();
-  const votes=await finishPendingBotVotes([]);
-  setAiBackgroundStatus(false);
-  aiBusy=true; calculate(votes); aiBusy=false;
+  botOnlyVotingPromise=(async()=>{
+    try{
+      if(!pendingBotVote)startBotVoteBackground();
+      const votes=await finishPendingBotVotes([]);
+      if(phase!=="vote")return;
+      setAiBackgroundStatus(false);
+      aiBusy=true;
+      try{calculate(votes);}finally{aiBusy=false;}
+    }finally{
+      setAiBackgroundStatus(false);
+    }
+  })();
+  try{return await botOnlyVotingPromise;}
+  finally{botOnlyVotingPromise=null;}
 }
 function calculate(votes){
  votesThisRound=votes.slice();
