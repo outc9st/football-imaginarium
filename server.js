@@ -125,11 +125,11 @@ async function geminiCompare(body){
   }));
   if(!bots.some(b=>b.options.length)) throw new Error('У ботов нет доступных карт для выбора.');
   const task=isDecoy?'выбери карту-обманку из своей руки для ассоциации':'угадай, какая из отправленных карт является секретной картой ведущего';
-  const prompt=`Ты — ИИ-мозг бота в футбольной игре ассоциаций.\n\nЗадача: ${task}.\nАссоциация: «${clip(body.clue,500)}»\n\nПравила:\n- Понимай смысл ассоциации как футбольную идею, а не только совпадение слов.\n- Используй футбольные факты из профилей карт.\n- Явные факты важнее слабых тематических совпадений.\n- Учитывай отрицательную совместимость: ассоциация про чувство штрафной не должна автоматически вести к защитнику или вратарю.\n- Не выдумывай факты, которых нет в профилях, кроме общеизвестных футбольных фактов.\n- Характер тренера влияет на предпочтения и тай-брейки, но не должен перебивать очевидное смысловое соответствие.\n- Для каждого бота верни ровно один существующий option id из его собственного списка.\n- Никогда не возвращай ID из списка другого бота.\n- Ответ должен быть максимально коротким: только структурированный JSON без объяснения вне JSON.\n\nБоты и варианты:\n${JSON.stringify(bots)}`;
+  const basePrompt=`Ты — ИИ-мозг бота в футбольной игре ассоциаций.\n\nЗадача: ${task}.\nАссоциация: «${clip(body.clue,500)}»\n\nПравила:\n- Понимай смысл ассоциации как футбольную идею, а не только совпадение слов.\n- Используй футбольные факты из профилей карт.\n- Явные факты важнее слабых тематических совпадений.\n- Учитывай отрицательную совместимость: ассоциация про чувство штрафной не должна автоматически вести к защитнику или вратарю.\n- Не выдумывай факты, которых нет в профилях, кроме общеизвестных футбольных фактов.\n- Характер тренера влияет на предпочтения и тай-брейки, но не должен перебивать очевидное смысловое соответствие.\n- Для каждого бота верни ровно один существующий option id из его собственного списка.\n- Никогда не возвращай ID из списка другого бота.\n- Ответ должен быть максимально коротким: только структурированный JSON без объяснения вне JSON.\n\nБоты и варианты:\n${JSON.stringify(bots)}`;
   const properties={botId:{type:'string'},choiceId:{type:'string'},confidence:{type:'number'}};
   if(!isDecoy) properties.reason={type:'string'};
   const payload={
-    contents:[{role:'user',parts:[{text:prompt}]}],
+    contents:[{role:'user',parts:[{text:basePrompt}]}],
     generationConfig:{
       responseMimeType:'application/json',
       responseSchema:{type:'object',properties:{results:{type:'array',items:{type:'object',properties,required:['botId','choiceId','confidence']}}},required:['results']},
@@ -143,17 +143,30 @@ async function geminiCompare(body){
   const models=[];
   if(RELAY_API_KEY) models.push({provider:'relay',name:RELAY_MODEL});
   if(GEMINI_API_KEY) models.push({provider:'google',name:GEMINI_MODEL || 'gemini-3.8-flash'});
+  const validate=result=>{
+    const rows=Array.isArray(result?.results)?result.results:[];
+    return bots.every(bot=>{
+      const matches=rows.filter(row=>String(row?.botId)===bot.botId);
+      return matches.length===1 && bot.options.some(option=>option.id===String(matches[0]?.choiceId));
+    });
+  };
   let lastError=null;
   for(const model of models){
-    try{
-      if(model.provider==='google') payload.generationConfig.thinkingConfig={thinkingLevel:isDecoy?'minimal':'low'};
-      return await callAiModel(model,payload);
-    }catch(err){
-      lastError=err;
-      // Only try the reserve provider after an actual failure. Successful requests
-      // never wait for another model.
-      if(!err.retryable && models.length===1) break;
+    for(let attempt=0;attempt<2;attempt++){
+      try{
+        if(model.provider==='google') payload.generationConfig.thinkingConfig={thinkingLevel:isDecoy?'minimal':'low'};
+        payload.contents[0].parts[0].text=basePrompt+(attempt?'\n\nИсправление: предыдущий ответ содержал недопустимый выбор. Верни по одному объекту для каждого botId и только choiceId из его options. Проверь каждый ID.':'');
+        const out=await callAiModel(model,payload);
+        if(validate(out.result))return out;
+        lastError=new Error('ИИ вернул choiceId, которого нет в списке доступных карт.');
+      }catch(err){
+        lastError=err;
+        if(attempt===0) continue;
+        break;
+      }
     }
+    // Keep provider fallback behavior for transport/provider failures only.
+    if(lastError?.message?.includes('choiceId')) break;
   }
   throw lastError || new Error('AI provider is not configured');
 }
