@@ -125,34 +125,36 @@ async function geminiCompare(body){
   }));
   if(!bots.some(b=>b.options.length)) throw new Error('У ботов нет доступных карт для выбора.');
   const task=isDecoy?'выбери карту-обманку из своей руки для ассоциации':'угадай, какая из отправленных карт является секретной картой ведущего';
-  const baseRules=`Ты — ИИ-мозг одного бота в футбольной игре ассоциаций.\nЗадача: ${task}.\nАссоциация: «${clip(body.clue,500)}»\nИспользуй футбольные факты из профилей и выбирай по смыслу. Не выдумывай факты. Ниже приведены только допустимые варианты именно этого бота. Скопируй choiceId дословно из выбранного варианта. Верни только JSON.`;
+  const explanationRule=isDecoy?'':'Для голосования добавь reason: одно короткое предложение о том, какая деталь ассоциации совпала с конкретным качеством выбранного футболиста и почему это похоже на футбольную оптику этого тренера. Не повторяй только имя игрока и не выдумывай факты.';
+  const baseRules=`Ты — ИИ-мозг одного бота в футбольной игре ассоциаций.\nЗадача: ${task}.\nАссоциация: «${clip(body.clue,500)}»\nИспользуй футбольные факты из профилей и выбирай по смыслу. Не выдумывай факты. Ниже приведены только допустимые варианты именно этого бота. Скопируй choiceId дословно из выбранного варианта. ${explanationRule}\nВерни только JSON.`;
   const models=[];
   if(RELAY_API_KEY) models.push({provider:'relay',name:RELAY_MODEL});
   if(GEMINI_API_KEY) models.push({provider:'google',name:GEMINI_MODEL || 'gemini-3.8-flash'});
   if(!models.length) throw new Error('AI provider is not configured');
   const properties={choiceId:{type:'string'},confidence:{type:'number'}};
   if(!isDecoy) properties.reason={type:'string'};
+  const required=isDecoy?['choiceId','confidence']:['choiceId','confidence','reason'];
   const results=await Promise.all(bots.map(async bot=>{
     if(!bot.options.length)return null;
     const optionsJson=JSON.stringify(bot.options);
     let lastError=null;
     for(let attempt=0;attempt<2;attempt++){
       const prompt=`${baseRules}\nБот: ${bot.coach}. ${bot.personality}\nДопустимые варианты: ${optionsJson}${attempt?'\nПредыдущий ответ был недопустим. Повтори выбор и верни choiceId ровно как в списке.':''}`;
-      const payload={contents:[{role:'user',parts:[{text:prompt}]}],generationConfig:{responseMimeType:'application/json',responseSchema:{type:'object',properties,required:['choiceId','confidence']},thinkingConfig:{thinkingLevel:isDecoy?'minimal':'low'}}};
+      const payload={contents:[{role:'user',parts:[{text:prompt}]}],generationConfig:{responseMimeType:'application/json',responseSchema:{type:'object',properties,required},thinkingConfig:{thinkingLevel:isDecoy?'minimal':'low'}}};
       try{
         const out=await callAiModel(models[0],payload);
         const choiceId=String(out.result?.choiceId??'');
-        if(bot.options.some(option=>option.id===choiceId))return {botId:bot.botId,choiceId,confidence:out.result.confidence,reason:out.result.reason,model:out.model};
-        lastError=new Error('ИИ вернул ID вне списка этого бота.');
+        if(bot.options.some(option=>option.id===choiceId) && (isDecoy || (typeof out.result?.reason==='string'&&out.result.reason.trim().length>=12)))return {botId:bot.botId,choiceId,confidence:out.result.confidence,reason:out.result.reason,model:out.model};
+        lastError=new Error(bot.options.some(option=>option.id===choiceId)?'ИИ не объяснил голос коротким обоснованием.':'ИИ вернул ID вне списка этого бота.');
       }catch(err){lastError=err;}
     }
     // Try the reserve provider once when available; its result is still checked against this bot's exact options.
     if(models[1] && !lastError?.message?.includes('вне списка')){
       try{
         const prompt=`${baseRules}\nБот: ${bot.coach}. ${bot.personality}\nДопустимые варианты: ${optionsJson}\nВерни choiceId строго из списка.`;
-        const payload={contents:[{role:'user',parts:[{text:prompt}]}],generationConfig:{responseMimeType:'application/json',responseSchema:{type:'object',properties,required:['choiceId','confidence']},thinkingConfig:{thinkingLevel:isDecoy?'minimal':'low'}}};
+        const payload={contents:[{role:'user',parts:[{text:prompt}]}],generationConfig:{responseMimeType:'application/json',responseSchema:{type:'object',properties,required},thinkingConfig:{thinkingLevel:isDecoy?'minimal':'low'}}};
         const out=await callAiModel(models[1],payload);const choiceId=String(out.result?.choiceId??'');
-        if(bot.options.some(option=>option.id===choiceId))return {botId:bot.botId,choiceId,confidence:out.result.confidence,reason:out.result.reason,model:out.model};
+        if(bot.options.some(option=>option.id===choiceId) && (isDecoy || (typeof out.result?.reason==='string'&&out.result.reason.trim().length>=12)))return {botId:bot.botId,choiceId,confidence:out.result.confidence,reason:out.result.reason,model:out.model};
       }catch(err){lastError=err;}
     }
     return {botId:bot.botId,error:lastError?.message||'ИИ не выбрал допустимую карту.'};
