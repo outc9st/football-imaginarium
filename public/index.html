@@ -119,18 +119,18 @@ table{width:100%;border-collapse:collapse}
 @media(max-width:800px){#thinkingOverlay{padding:12px}.thinking-box{padding:19px 15px}.thinking-title{font-size:19px}.thinking-player{padding:6px 8px}}
 </style>
 <style>
-#aiDebugPanel{position:fixed;right:12px;bottom:12px;z-index:9999;width:min(430px,calc(100vw - 24px));max-height:46vh;overflow:auto;background:rgba(10,10,14,.96);color:#fff;border:1px solid rgba(255,255,255,.16);border-radius:14px;padding:12px;box-shadow:0 12px 40px rgba(0,0,0,.35);font:12px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;display:none}
+#aiDebugPanel{position:fixed;top:56px;right:12px;z-index:9999;width:min(430px,calc(100vw - 24px));max-height:calc(100vh - 68px);overflow:auto;background:rgba(10,10,14,.96);color:#fff;border:1px solid rgba(255,255,255,.16);border-radius:14px;padding:12px;box-shadow:0 12px 40px rgba(0,0,0,.35);font:12px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;display:none}
 #aiDebugPanel.show{display:block}
 #aiDebugPanel .ai-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;font-weight:700}
 #aiDebugPanel .ai-entry{padding:8px 0;border-top:1px solid rgba(255,255,255,.1)}
 #aiDebugPanel .ai-ok{color:#8df0a8}.ai-fallback{color:#ffcc80}.ai-bad{color:#ff8e8e}
-#aiDebugPanel button{margin:0;padding:5px 8px;font-size:11px}
+#aiDebugPanel button{margin:0;padding:5px 8px;font-size:11px}.ai-debug-toggle{position:fixed;top:12px;right:12px;z-index:10000;margin:0;padding:7px 10px;background:#263247;color:#fff;border:1px solid rgba(255,255,255,.22);box-shadow:0 3px 12px rgba(0,0,0,.28);font-size:12px;cursor:pointer}
 </style>
 
 </head>
 <body>
 <div id="thinkingOverlay" aria-live="polite" aria-busy="true"><div class="thinking-box"><div class="thinking-title" id="thinkingTitle">Игроки думают<span class="thinking-dots"><i></i><i></i><i></i></span></div><div class="thinking-sub" id="thinkingSub">Подбирают лучший вариант</div><div class="thinking-players" id="thinkingPlayers"></div><div class="thinking-wait">Игра не зависла — боты принимают решение</div></div></div><div id="aiBackgroundStatus"><span class="ai-bg-spinner"></span><span id="aiBackgroundText">Боты уже думают…</span></div>
-<div id="aiDebugPanel"><div class="ai-head"><span>🤖 AI TEST — Gemini vs ScoreCard</span><button onclick="toggleAiDebug(false)">Скрыть</button></div><div id="aiDebugBody"><div class="muted">Пока решений нет.</div></div></div>
+<button id="aiDebugToggle" class="ai-debug-toggle" onclick="toggleAiDebug()" aria-expanded="false" aria-controls="aiDebugPanel">🤖 AI TEST</button><div id="aiDebugPanel"><div class="ai-head"><span>🤖 AI TEST — Gemini vs ScoreCard</span><button onclick="toggleAiDebug(false)">Скрыть</button></div><div id="aiDebugBody"><div class="muted">Пока решений нет.</div></div></div>
 
 <div class="app">
 <h1>⚽ Football Imaginarium v31 — Gemini Test v5</h1>
@@ -279,7 +279,7 @@ function setThinking(show,kind='thinking',names=[]){
   if(sub)sub.textContent=lines[0]; if(thinkingTimer)clearInterval(thinkingTimer);
   thinkingTimer=setInterval(()=>{idx=(idx+1)%lines.length;if(sub)sub.textContent=lines[idx];},1300); overlay.classList.add('show');
 }
-function toggleAiDebug(force){ const el=document.getElementById('aiDebugPanel'); if(!el)return; el.classList.toggle('show', force===undefined?!el.classList.contains('show'):!!force); }
+function toggleAiDebug(force){ const el=document.getElementById('aiDebugPanel'); if(!el)return; const show=force===undefined?!el.classList.contains('show'):!!force; el.classList.toggle('show',show); const button=document.getElementById('aiDebugToggle'); if(button){button.setAttribute('aria-expanded',String(show));button.textContent=show?'🤖 Закрыть AI TEST':'🤖 AI TEST';} }
 function escapeHtml(v){return String(v??'').replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));}
 function renderAiDebug(){
   const el=document.getElementById('aiDebugBody'); if(!el)return;
@@ -288,7 +288,7 @@ function renderAiDebug(){
     return `<div class="ai-entry"><b>${escapeHtml(thinkingPersonLabel(e.coach))}</b> · ${escapeHtml(e.task)}<br>Gemini: <b>${escapeHtml(e.geminiName||'—')}</b> ${Number.isFinite(e.confidence)?`(${Math.round(e.confidence*100)}%)`:''}<br>ScoreCard: <b>${escapeHtml(e.scoreName||'—')}</b><br><span class="${cls}">Фактический выбор: <b>${escapeHtml(e.chosenName||'—')}</b> · ${e.source}${e.latency?` · ${e.latency} ms`:''}</span>${e.reason?`<br><span class="muted">${escapeHtml(e.reason)}</span>`:''}</div>`;
   }).join('') || '<div class="muted">Пока решений нет.</div>';
 }
-function addAiDebug(e){aiDebugEntries.push(e);if(aiDebugEntries.length>40)aiDebugEntries.shift();renderAiDebug();if(AI_TEST_MODE)toggleAiDebug(true);}
+function addAiDebug(e){aiDebugEntries.push(e);if(aiDebugEntries.length>40)aiDebugEntries.shift();renderAiDebug();}
 function coachAiPersonality(coach){
   const styles=(coachStyles&&coachStyles[coach]||[]).join(', ');
   const bias=(coachClueBias&&coachClueBias[coach]||[]).join(', ');
