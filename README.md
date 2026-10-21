@@ -76,3 +76,14 @@ Google's current documentation describes Gemini 3.8 Flash as supporting low/medi
 - Bot clue generation now has a dedicated thinking state: the coach name is shown (for example, `Пеп придумывает ассоциацию…`).
 - The same status is synchronized to online players, including the small background AI status indicator.
 - Clue-generation animation has dedicated rotating status messages and a highlighted coach chip.
+
+
+## RelayModels configuration
+
+The server supports RelayModels as the primary AI provider while keeping Google Gemini as a reserve. Add these environment variables in Render:
+
+- `RELAY_API_KEY` — your RelayModels API key (keep it secret).
+- `RELAY_BASE_URL` — `https://api.relaymodels.com/v1`
+- `RELAY_MODEL` — `gemini-3.7-flash`
+
+The existing `GEMINI_API_KEY` remains available as a fallback. A successful RelayModels request does not call the fallback provider, so there is no extra model-switching delay.

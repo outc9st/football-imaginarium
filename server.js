@@ -6,6 +6,9 @@ const { WebSocketServer } = require('ws');
 const PORT = process.env.PORT || 3000;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
+const RELAY_API_KEY = process.env.RELAY_API_KEY || '';
+const RELAY_BASE_URL = (process.env.RELAY_BASE_URL || 'https://api.relaymodels.com/v1').replace(/\/$/, '');
+const RELAY_MODEL = process.env.RELAY_MODEL || 'gemini-3.7-flash';
 const PUBLIC = path.join(__dirname, 'public');
 const rooms = new Map();
 
@@ -49,10 +52,15 @@ function leave(p){
 function sendJson(res,status,data){const body=JSON.stringify(data);res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'});res.end(body)}
 function readJson(req){return new Promise((resolve,reject)=>{let s='';req.on('data',c=>{s+=c;if(s.length>1500000)req.destroy()});req.on('end',()=>{try{resolve(JSON.parse(s||'{}'))}catch(e){reject(e)}});req.on('error',reject)})}
 function clip(v,n=800){return String(v??'').slice(0,n)}
+async function parseStructuredJson(raw, provider){
+  const text=String(raw??'').trim();
+  if(!text)throw new Error(`${provider} не вернул результат.`);
+  const cleaned=text.replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,'').trim();
+  try{return JSON.parse(cleaned)}catch{throw new Error(`${provider} вернул некорректный structured JSON.`)}
+}
+
 async function callGeminiModel(model,payload){
   const url=`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`;
-  // Test mode: do not abort a valid Gemini request prematurely. The game shows a
-  // thinking animation while waiting, so we can measure the real API latency.
   try{
     const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
     const text=await r.text();
@@ -63,17 +71,53 @@ async function callGeminiModel(model,payload){
     }
     let data;try{data=JSON.parse(text)}catch{throw new Error('Gemini вернул некорректный JSON.')}
     const raw=data?.candidates?.[0]?.content?.parts?.[0]?.text;
-    if(!raw)throw new Error('Gemini не вернул результат.');
-    let result;try{result=JSON.parse(raw)}catch{throw new Error('Gemini вернул некорректный structured JSON.')}
-    return {result,model};
+    const result=await parseStructuredJson(raw,'Gemini');
+    return {result,model,provider:'Google Gemini'};
   }catch(err){
     if([429,500,502,503,504].includes(err.status)) err.retryable=true;
     throw err;
   }
 }
 
+async function callRelayModel(model,prompt){
+  if(!RELAY_API_KEY)throw new Error('RELAY_API_KEY не задан на сервере.');
+  const url=`${RELAY_BASE_URL}/chat/completions`;
+  const payload={
+    model,
+    messages:[{role:'user',content:String(prompt||'')}],
+    response_format:{type:'json_object'},
+    temperature:0.2,
+    max_tokens:500
+  };
+  try{
+    const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${RELAY_API_KEY}`},body:JSON.stringify(payload)});
+    const text=await r.text();
+    if(!r.ok){
+      const err=new Error(`RelayModels HTTP ${r.status}: ${text.slice(0,500)}`);
+      err.status=r.status;
+      throw err;
+    }
+    let data;try{data=JSON.parse(text)}catch{throw new Error('RelayModels вернул некорректный JSON.')}
+    const raw=data?.choices?.[0]?.message?.content;
+    const result=await parseStructuredJson(raw,'RelayModels');
+    return {result,model,provider:'RelayModels'};
+  }catch(err){
+    if([429,500,502,503,504].includes(err.status)) err.retryable=true;
+    throw err;
+  }
+}
+
+function relayPromptFromGeminiPayload(payload){
+  return (payload?.contents||[]).flatMap(x=>Array.isArray(x?.parts)?x.parts:[]).map(x=>String(x?.text||'')).filter(Boolean).join('\n\n');
+}
+
+async function callAiModel(model,payload){
+  if(model.provider==='relay') return callRelayModel(model.name,relayPromptFromGeminiPayload(payload));
+  return callGeminiModel(model.name,payload);
+}
+
 async function geminiCompare(body){
-  if(!GEMINI_API_KEY) throw new Error('GEMINI_API_KEY не задан на сервере.');
+  if(!RELAY_API_KEY && !GEMINI_API_KEY) throw new Error('Ни RELAY_API_KEY, ни GEMINI_API_KEY не заданы на сервере.');
   const isDecoy=body.task==='decoy';
   const bots=(Array.isArray(body.bots)?body.bots:[]).slice(0,8).map(b=>({
     botId:String(b.botId),coach:clip(b.coach,80),personality:clip(b.personality,700),
@@ -93,34 +137,33 @@ async function geminiCompare(body){
     }
   };
 
-  // Decoy selection is a fast classification task: use the fastest Flash-Lite model.
-  // Voting needs a little more semantic reasoning: use the configured Flash model at low thinking.
-  const configured=GEMINI_MODEL || 'gemini-3.8-flash';
-  const primary=isDecoy?'gemini-3.5-flash-lite':configured;
-  const fallback=isDecoy?'gemini-3.6-flash':'gemini-3.6-flash';
-  const models=[primary,fallback].filter((m,i,a)=>m&&a.indexOf(m)===i);
+  // RelayModels is the primary provider when RELAY_API_KEY is configured.
+  // There is no model-by-model chain during a normal request, so switching providers
+  // does not add latency unless the primary provider actually fails.
+  const models=[];
+  if(RELAY_API_KEY) models.push({provider:'relay',name:RELAY_MODEL});
+  if(GEMINI_API_KEY) models.push({provider:'google',name:GEMINI_MODEL || 'gemini-3.8-flash'});
   let lastError=null;
   for(const model of models){
     try{
-      const level=isDecoy?'minimal':'low';
-      payload.generationConfig.thinkingConfig={thinkingLevel:level};
-      return await callGeminiModel(model,payload);
+      if(model.provider==='google') payload.generationConfig.thinkingConfig={thinkingLevel:isDecoy?'minimal':'low'};
+      return await callAiModel(model,payload);
     }catch(err){
       lastError=err;
-      // Capacity errors are worth an immediate fallback. In this test build we do
-      // not impose a client-side timeout, so successful requests are allowed to finish.
-      if(!err.retryable || /timeout/i.test(err.message||'')) break;
+      // Only try the reserve provider after an actual failure. Successful requests
+      // never wait for another model.
+      if(!err.retryable && models.length===1) break;
     }
   }
-  throw lastError || new Error('Gemini request failed');
+  throw lastError || new Error('AI provider is not configured');
 }
 
 const server=http.createServer(async (req,res)=>{
   const u=decodeURIComponent(req.url.split('?')[0]);
-  if(req.method==='GET' && u==='/api/ai-status') return sendJson(res,200,{configured:!!GEMINI_API_KEY,model:GEMINI_MODEL});
-  if(req.method==='POST' && u==='/api/gemini/compare'){try{const out=await geminiCompare(await readJson(req));return sendJson(res,200,{ok:true,model:out.model,result:out.result})}catch(e){return sendJson(res,502,{ok:false,error:e.message||'Gemini request failed'})}}
+  if(req.method==='GET' && u==='/api/ai-status') return sendJson(res,200,{configured:!!(RELAY_API_KEY||GEMINI_API_KEY),relayConfigured:!!RELAY_API_KEY,googleConfigured:!!GEMINI_API_KEY,model:RELAY_API_KEY?RELAY_MODEL:GEMINI_MODEL,provider:RELAY_API_KEY?'RelayModels':'Google Gemini'});
+  if(req.method==='POST' && u==='/api/gemini/compare'){try{const out=await geminiCompare(await readJson(req));return sendJson(res,200,{ok:true,model:out.model,provider:out.provider,result:out.result})}catch(e){return sendJson(res,502,{ok:false,error:e.message||'Gemini request failed'})}}
   if(req.method==='POST' && u==='/api/gemini/clue'){try{
-    if(!GEMINI_API_KEY) throw new Error('GEMINI_API_KEY не задан на сервере.');
+    if(!RELAY_API_KEY && !GEMINI_API_KEY) throw new Error('Ни RELAY_API_KEY, ни GEMINI_API_KEY не заданы на сервере.');
     const body=await readJson(req);
     const card=body.card||{};
     const coach=clip(body.coach,80);
@@ -129,11 +172,17 @@ const server=http.createServer(async (req,res)=>{
     const prompt=`Ты придумываешь ассоциацию для футбольной версии Имаджинариума.\n\nЗагаданная карта: ${clip(card.name,120)}\nПрофиль футболиста: ${profile}\n${personality}\n\nПридумай ОДНУ короткую, выразительную ассоциацию для этой карты. Она должна быть полезной в игре: не называть футболиста и не быть почти прямой подсказкой через уникальное имя, клуб, страну или точный факт, который однозначно выдаёт карту. Предпочтительны футбольная идея, метафора, игровое качество, характерный эпизод или образ. Избегай банальных ассоциаций вроде «хороший игрок», «талант», «скорость» без дополнительного смысла. Длина — примерно 2–8 слов. Манера может учитывать профиль тренера, но ассоциация должна оставаться понятной другим игрокам.\n\nВерни только JSON с одним полем clue.`;
     const payload={contents:[{role:'user',parts:[{text:prompt}]}],generationConfig:{responseMimeType:'application/json',responseSchema:{type:'object',properties:{clue:{type:'string'}},required:['clue']},thinkingConfig:{thinkingLevel:'low'}}};
     let lastError=null;
-    for(const model of [GEMINI_MODEL||'gemini-3.8-flash','gemini-3.6-flash']){
-      try{const out=await callGeminiModel(model,payload);return sendJson(res,200,{ok:true,model:out.model,result:out.result});}
-      catch(e){lastError=e;if(!e.retryable)break;}
+    const models=[];
+    if(RELAY_API_KEY) models.push({provider:'relay',name:RELAY_MODEL});
+    if(GEMINI_API_KEY) models.push({provider:'google',name:GEMINI_MODEL||'gemini-3.8-flash'});
+    for(const model of models){
+      try{
+        if(model.provider==='google') payload.generationConfig.thinkingConfig={thinkingLevel:'low'};
+        const out=await callAiModel(model,payload);
+        return sendJson(res,200,{ok:true,model:out.model,provider:out.provider,result:out.result});
+      }catch(e){lastError=e;}
     }
-    throw lastError||new Error('Gemini clue request failed');
+    throw lastError||new Error('AI provider is not configured');
   }catch(e){return sendJson(res,502,{ok:false,error:e.message||'Gemini clue request failed'})}}
   let filePath=u; if(filePath==='/')filePath='/index.html';
   const f=path.normalize(path.join(PUBLIC,filePath));
@@ -230,4 +279,4 @@ wss.on('connection',ws=>{
   ws.on('close',()=>leave(p));
 });
 
-server.listen(PORT,()=>console.log(`Football Imaginarium server on ${PORT}; Gemini ${GEMINI_API_KEY?'configured':'not configured'}; model=${GEMINI_MODEL}`));
+server.listen(PORT,()=>console.log(`Football Imaginarium server on ${PORT}; RelayModels ${RELAY_API_KEY?'configured':'not configured'}${RELAY_API_KEY?` model=${RELAY_MODEL}`:''}; Google Gemini ${GEMINI_API_KEY?'configured':'not configured'}${GEMINI_API_KEY?` model=${GEMINI_MODEL}`:''}`));
