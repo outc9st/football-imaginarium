@@ -217,7 +217,7 @@ const server=http.createServer(async (req,res)=>{
   if(!f.startsWith(PUBLIC)){res.writeHead(403);return res.end('Forbidden')}
   fs.readFile(f,(e,d)=>{
     if(e){res.writeHead(404);return res.end('Not found')}
-    const t={'.html':'text/html; charset=utf-8','.js':'text/javascript; charset=utf-8','.css':'text/css; charset=utf-8'}[path.extname(f)]||'application/octet-stream';
+    const t={'.html':'text/html; charset=utf-8','.js':'text/javascript; charset=utf-8','.css':'text/css; charset=utf-8','.jpg':'image/jpeg','.jpeg':'image/jpeg'}[path.extname(f).toLowerCase()]||'application/octet-stream';
     res.writeHead(200,{'Content-Type':t,'Cache-Control':'no-cache'});res.end(d);
   });
 });
