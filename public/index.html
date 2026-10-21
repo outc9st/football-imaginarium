@@ -134,7 +134,7 @@ table{width:100%;border-collapse:collapse}
 
 <div class="app">
 <h1>⚽ Football Imaginarium v31 — Gemini Test v5</h1>
-<div class="sub">Футбольная версия Имаджинариума — с настоящим чередованием ведущих и персональными ассоциациями.</div>
+<div class="sub">Футбольная версия Имаджинариума — с настоящим чередованием ведущих и персональными ассоциациями. В колоде: <b id="playerDatabaseCount">…</b> игрока.</div>
 
 <div class="panel online-panel" id="onlineHomePanel">
   <div class="online-hero">
@@ -409,7 +409,7 @@ const botProfiles = {
 "Achraf Hakimi": {tags:"скорость, правый фланг, ПСЖ, Интер, Реал, Марокко", clues:["Правый фланг, который может превратиться в контратаку","Футболист, для которого слово «скорость» почти профессия","Марокко на ЧМ-2022","Защитник, который играет гораздо выше своей позиции"]},
 "Alessandro Bastoni": {tags:"левый центральный защитник, Интер, Италия, длинный пас, тройка защитников", clues:["Защитник, который любит начинать атаки","Итальянская школа обороны, но с современным пасом","Левша в центре обороны","Когда центральный защитник выглядит как полузащитник"]},
 "Alexis Sanchez": {tags:"Чили, Арсенал, Барселона, Интер, прессинг, скорость", clues:["Чилийская версия слова «энергия»","Арсенал до эпохи Обамеянга","Игрок, который никогда не выключал прессинг","Северный Лондон и огромная самоотдача"]},
-"Álvaro Carreras": {tags:"Испания, Реал, Атлетико, Ювентус, форвард, Евро", clues:["Нападающий, который успел поиграть за два самых принципиальных клуба Мадрида","Испанский форвард с очень длинным списком больших клубов","Человек, которого часто обсуждают даже после забитого гола","Евро и вечные споры вокруг девятки"]},
+"Álvaro Carreras": {tags:"Испания, защитник, левый защитник, скорость, подключение в атаку", clues:["Левый защитник, который активно поддерживает атаки","Скорость и ширина на левом фланге","Защитник, которому комфортно продвигать мяч вперёд","Молодой игрок обороны с атакующей манерой"]},
 "Antoine Griezmann": {tags:"Франция, Атлетико, Барселона, чемпион мира, удар, универсальность", clues:["Чемпион мира, который любит играть между линиями","Француз, которого проще всего представить в Атлетико","Не совсем десятка и не совсем нападающий","Один из самых узнаваемых французов поколения"]},
 "Antonio Rudiger": {tags:"Германия, Челси, Реал, центральный защитник, характер, скорость", clues:["Центральный защитник, которого трудно не заметить","Берлинский характер в Мадриде","Человек, который умеет вывести нападающего из себя","Защитник с репутацией человека без тормозов"]},
 "Arda Guler": {tags:"Турция, Реал, Фенербахче, левая нога, молодой талант, плеймейкер", clues:["Турецкий талант с очень красивой левой ногой","Молодой игрок, которому уже доверяют в Мадриде","Фенербахче и мечта о большом европейском клубе","Один из тех, про кого говорят «будущий топ»"]},
@@ -487,12 +487,16 @@ const botProfiles = {
 "Youri Tielemans": {tags:"Бельгия, Андерлехт, Монако, Лестер, Астон Вилла, полузащита, дальний удар", clues:["Бельгиец с длинной карьерой в Англии","Андерлехт → Монако → Лестер","Дальний удар из центра поля","Полузащитник, который уже давно играет на высоком уровне"]},
 "Wout Weghorst": {tags:"Нидерланды, Вольфсбург, Бернли, Бешикташ, Манчестер Юнайтед, форвард, рост", clues:["Очень высокий нидерландский форвард","Игрок, которого часто выпускают для изменения рисунка игры","Вольфсбург и Бернли","Нападающий, которого невозможно не заметить в штрафной"]},
 "Xabi Alonso": {tags:"Испания, Ливерпуль, Реал, Бавария, полузащита, тренер", clues:["Игрок, который позже стал тренером","Ливерпуль → Реал → Бавария","Испанский дирижёр с дальним пасом","Номер 14 и длинные передачи"]},
-"Luka Modric": {tags:"Хорватия, Реал, Тоттенхэм, полузащита, пас, Золотой мяч", clues:["Хорват, который получил Золотой мяч","Тоттенхэм → Реал","Полузащитник, которого легко узнать по внешности и манере паса","Человек, который пережил несколько поколений Мадрида"]}
-};
+"Luka Modric": {tags:"Хорватия, Реал, Тоттенхэм, полузащита, пас, Золотой мяч", clues:["Хорват, который получил Золотой мяч","Тоттенхэм → Реал","Полузащитник, которого легко узнать по внешности и манере паса","Человек, который пережил несколько поколений Мадрида"]},
+  "Robert Sanchez": {tags:"Испания, вратарь, сейвы, реакция, игра ногами", clues:["Испанский вратарь, уверенно играющий ногами","Голкипер, от которого ждут надёжных сейвов","Вратарь с хорошей реакцией"]},
+  "Emiliano Martinez": {tags:"Аргентина, вратарь, сейвы, игра на выходах, пенальти", clues:["Аргентинский чемпион мира в воротах","Вратарь, известный уверенностью в решающих моментах","Голкипер, который умеет читать пенальти"]},
+  "Ruben Neves": {tags:"Португалия, полузащитник, опорник, длинный пас, дальний удар", clues:["Португальский полузащитник с точным длинным пасом","Умеет начинать атаку из глубины","Опорник, опасный при ударах издали"]},
+  "Gerard Martin": {tags:"Испания, защитник, левый защитник, фланг, пас, движение", clues:["Защитник левого фланга, который помогает начинать атаки","Движение и пас на левом краю обороны","Молодой испанский защитник"]}};
 
-const playerProfileAliases = {"Tijjani Reijnders":"Tijjani Reijnders","Ilya Zabarnyi":"Illia Zabarnyi","Phil Foden":"Foden","Alvaro Carreras":"Álvaro Carreras","Hakan Calhanoglu":"Hakan Calhanoglu","Amad Diallo":"Diallo","Nico O'Reilly":"O'Reilly","Gerard Martin":"Martin","Robert Sanchez":"Robert Sánchez","Ruben Neves":"Ruben","Martin Odegaard":"Odegaard","Lennart Karl":"Karl","Emiliano Martinez":"Martinez","Jules Kounde":"Kounde","Alejandro Garnacho":"Garnacho","Elliot Anderson":"Anderson","Joao Cancelo":"Cancelo","Aurelien Tchouameni":"Aurelien Tchouameni","Aleksandar Pavlovic":"Aleksandar Pavlovic","Alejandro Balde":"Alejandro Balde","Fede Valverde":"Federico Valverde","Joshua Zirkzee":"Zirkzee","Vinicius Junior":"Vinicius Junior","Senne Lammens":"Senne","Angel Gomes":"Ángel Gomes","Kobbie Mainoo":"Mainoo","Matthijs De Ligt":"De Ligt","Ederson Moraes":"Ederson","Bryan Mbeumo":"Mbeumo","Andre Onana":"Onana","Thibaut Courtois":"Thibaut Courtois","Rodrygo Goes":"Rodrygo","Rodrigo Hernández":"Rodri","Vítor Machado Ferreira":"Vitinha","Antony dos Santos":"Antony","Federico Valverde":"Federico Valverde","Carlos Henrique Casimiro":"Casemiro","Endrick Felipe Moreira de Sousa":"Endrick","Pedro González":"Pedri","Estevao Willian":"Estevao","Marcos Aoás Corrêa":"Marquinhos","Raphael Dias Belloli":"Raphinha"};Object.entries(playerProfileAliases).forEach(([name,alias])=>{if(!botProfiles[name]&&botProfiles[alias])botProfiles[name]=botProfiles[alias];});
+const playerProfileAliases = {"Tijjani Reijnders":"Tijjani Reijnders","Ilya Zabarnyi":"Illia Zabarnyi","Phil Foden":"Foden","Alvaro Carreras":"Álvaro Carreras","Hakan Calhanoglu":"Hakan Calhanoglu","Amad Diallo":"Diallo","Nico O'Reilly":"O'Reilly","Gerard Martin":"Gerard Martin","Robert Sanchez":"Robert Sanchez","Ruben Neves":"Ruben Neves","Martin Odegaard":"Odegaard","Lennart Karl":"Karl","Emiliano Martinez":"Emiliano Martinez","Jules Kounde":"Kounde","Alejandro Garnacho":"Garnacho","Elliot Anderson":"Anderson","Joao Cancelo":"Cancelo","Aurelien Tchouameni":"Aurelien Tchouameni","Aleksandar Pavlovic":"Aleksandar Pavlovic","Alejandro Balde":"Alejandro Balde","Fede Valverde":"Federico Valverde","Joshua Zirkzee":"Zirkzee","Vinicius Junior":"Vinicius Junior","Senne Lammens":"Senne","Angel Gomes":"Ángel Gomes","Kobbie Mainoo":"Mainoo","Matthijs De Ligt":"De Ligt","Ederson Moraes":"Ederson","Bryan Mbeumo":"Mbeumo","Andre Onana":"Onana","Thibaut Courtois":"Thibaut Courtois","Rodrygo Goes":"Rodrygo","Rodrigo Hernández":"Rodri","Vítor Machado Ferreira":"Vitinha","Antony dos Santos":"Antony","Federico Valverde":"Federico Valverde","Carlos Henrique Casimiro":"Casemiro","Endrick Felipe Moreira de Sousa":"Endrick","Pedro González":"Pedri","Estevao Willian":"Estevao","Marcos Aoás Corrêa":"Marquinhos","Raphael Dias Belloli":"Raphinha"};Object.entries(playerProfileAliases).forEach(([name,alias])=>{if(!botProfiles[name]&&botProfiles[alias])botProfiles[name]=botProfiles[alias];});
 
 let deck = pool.map((x,i)=>({id:i,name:x[0],country:x[1],clubs:x[2],tags:(botProfiles[x[0]]?.tags || ""),clues:(botProfiles[x[0]]?.clues || []),img:x[4]}));
+const databaseCountLabel=document.getElementById('playerDatabaseCount'); if(databaseCountLabel) databaseCountLabel.textContent=pool.length;
 
 // Карта после раздачи не возвращается в колоду.
 // Поэтому один и тот же футболист не может одновременно появиться
@@ -1215,8 +1219,11 @@ const playerFactOverrides = {
   "Victor Lindelof": {country:"Швеция", roles:["defender","cb"]},
   "Wesley Fofana": {country:"Франция", roles:["defender","cb"]},
   "Willian Pacho": {country:"Эквадор", roles:["defender","cb"]},
-  "Zion Suzuki": {country:"Япония", roles:["keeper"]}  
-};
+  "Zion Suzuki": {country:"Япония", roles:["keeper"]},  
+  "Robert Sanchez": {country:"Испания", roles:["keeper"]},
+  "Emiliano Martinez": {country:"Аргентина", roles:["keeper"]},
+  "Ruben Neves": {country:"Португалия", roles:["midfielder","dm"]},
+  "Gerard Martin": {country:"Испания", roles:["defender","lb"]},};
 
 function allPlayerTags(c){
   const a=(extraPlayerTags[c.name]||"").split(",").map(x=>x.trim()).filter(Boolean);
