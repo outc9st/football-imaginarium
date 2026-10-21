@@ -48,7 +48,7 @@ h1{margin:0 0 6px}.sub{color:#9da5b3;margin-bottom:18px}
 .secret-card .result-card-label{color:#8ee0a8}
 .result-owner{font-size:13px;color:#a9b1bd;margin:3px 2px 9px}
 .result-votes{font-size:13px;line-height:1.8;margin:0 2px}
-.vote-chip{display:inline-block;background:#242b38;border-radius:7px;padding:1px 7px;margin:2px 3px 2px 0;color:#f3f5f7}
+.vote-chip{display:inline-block;vertical-align:top;background:#242b38;border-radius:7px;padding:4px 7px;margin:2px 3px 2px 0;color:#f3f5f7}.vote-reason{display:block;color:#a9b1bd;font-size:11px;line-height:1.35;max-width:230px;margin-top:2px}
 .card{background:#f1f3f5;color:#151820;border:0;border-radius:12px;padding:14px;min-width:145px;cursor:pointer;text-align:left;font-weight:700}
 .card small{display:block;color:#697180;font-weight:400;margin-top:6px}
 .card.sel{outline:3px solid #65a9ff}.card.self-card{opacity:.42;cursor:not-allowed;filter:grayscale(.25)}
@@ -336,10 +336,26 @@ async function prepareBotDecoys(entries,clueText){
   entries.forEach(e=>{const idx=Number(e.botId),p=players[idx],d=decisions.get(e.botId);const c=p?.hand?.find(x=>String(x.id)===String(d?.choiceId))|| (p?chooseDecoy(p,clueText):null);if(c&&!submissions.some(s=>s.owner===idx))submissions.push({id:c.id,owner:idx});});
   return decisions;
 }
+function ensurePlayerDecoySubmissions(clueText){
+  const used=new Set(submissions.map(s=>String(s.id)));
+  for(let idx=0;idx<players.length;idx++){
+    if(idx===storyteller||submissions.some(s=>s.owner===idx))continue;
+    const player=players[idx];
+    if(!player?.isBot)return false;
+    const hand=(player.hand||[]).map(mpCardById).filter(c=>c&&!used.has(String(c.id)));
+    if(!hand.length)return false;
+    const card=chooseDecoy({...player,hand},clueText);
+    if(!card)return false;
+    submissions.push({id:card.id,owner:idx});
+    used.add(String(card.id));
+    addAiDebug({coach:player.name,task:'decoy',clue:clueText,geminiName:'—',scoreName:card.name,chosenName:card.name,source:'Fallback',reason:'Карта автоматически добавлена из руки, чтобы завершить набор карт раунда.'});
+  }
+  return submissions.length===players.length;
+}
 async function prepareBotVotes(entries,baseVotes=[]){
   const decisions=await aiCompareBots('vote',clue,entries);
   const votes=baseVotes.slice();
-  entries.forEach(e=>{const d=decisions.get(e.botId);const j=submissions.findIndex(s=>String(s.id)===String(d?.choiceId));if(j>=0&&!votes.some(v=>v.voter===Number(e.botId)))votes.push({voter:Number(e.botId),card:j});});
+  entries.forEach(e=>{const d=decisions.get(e.botId);const j=submissions.findIndex(s=>String(s.id)===String(d?.choiceId));if(j>=0&&!votes.some(v=>v.voter===Number(e.botId))){const reason=String(d?.gemini?.reason||'').trim()||(d?.source==='ScoreCard'||d?.source==='Fallback'?'Запасной выбор: профиль карты лучше совпал с ассоциацией.':'');votes.push({voter:Number(e.botId),card:j,reason:reason.slice(0,240)});}});
   return votes;
 }
 async function finishPendingBotDecoys(){const p=pendingBotDecoy;if(!p)return;pendingBotDecoy=null;await p;}
@@ -729,6 +745,10 @@ function card(c,onclick="",disabled=false,selfCard=false){
    <img src="${c.img}" alt="" loading="lazy">
  </button>`;
 }
+function voteReasonChip(v){
+ const name=players[v.voter]?.name||'Игрок';
+ return `<span class="vote-chip"><b>${escapeHtml(name)}</b>${v.reason?`<span class="vote-reason">${escapeHtml(v.reason)}</span>`:''}</span>`;
+}
 function renderStory(){
  let el=document.getElementById("storyBody");
  document.getElementById("storyTitle").textContent=storyteller===0 ? "Твоя ассоциация" : `${players[storyteller].name} загадывает`;
@@ -758,6 +778,7 @@ function renderStory(){
         if(!humans.length){
           await finishPendingBotDecoys();
           setAiBackgroundStatus(false);
+          if(!ensurePlayerDecoySubmissions(clue)){render();return;}
           submissions=shuffle(submissions); phase="vote"; render();
           if(storyteller===0)setTimeout(botOnlyVoting,80);
         }
@@ -790,7 +811,7 @@ function renderStory(){
    const voteNames = {};
    votesThisRound.forEach(v=>{
      if(!voteNames[v.card]) voteNames[v.card]=[];
-     voteNames[v.card].push(players[v.voter].name);
+     voteNames[v.card].push(v);
    });
    const cardsHtml = submissions.map((s,i)=>{
      const c=deck.find(x=>x.id===s.id);
@@ -801,7 +822,7 @@ function renderStory(){
        ${card(c,"",true)}
        <div class="result-card-label">${isSecret ? "★ ЗАГАДАННАЯ КАРТА" : "КАРТА-ОБМАНКА"}</div>
        ${isSecret ? `<div class="result-owner">Загадывал: <b>${owner}</b></div>` : `<div class="result-owner">Предложил: <b>${owner}</b></div>`}
-       <div class="result-votes"><b>Голосовали:</b> ${voters.length ? voters.map(n=>`<span class="vote-chip">${n}</span>`).join("") : `<span class="muted">никто</span>`}</div>
+       <div class="result-votes"><b>Голосовали:</b> ${voters.length ? voters.map(voteReasonChip).join("") : `<span class="muted">никто</span>`}</div>
      </div>`;
    }).join("");
    el.innerHTML=`<div class="notice"><b>Ассоциация:</b> ${clue}<br><b>Правильную карту выбрали:</b> ${votesThisRound.filter(v=>submissions[v.card].id===secretId).length} из ${players.length-1}</div><div class="result-grid">${cardsHtml}</div>${isFinal ? `<button onclick="showFinalTable()">Показать итоговую таблицу →</button>` : `<button onclick="nextRound()">Следующий раунд →</button>`}`;
@@ -819,6 +840,7 @@ async function submitClue(){
    await finishPendingBotDecoys();
    setThinking(false);
  }
+ if(!ensurePlayerDecoySubmissions(clue)){setAiBackgroundStatus(false);render();return;}
  setAiBackgroundStatus(false);
  submissions=shuffle(submissions); phase="vote"; render();
  if(storyteller===0)setTimeout(botOnlyVoting,80);
@@ -2652,6 +2674,7 @@ async function chooseHumanDecoy(i){
   render();
   // Gemini уже выбирает карты ботов в фоне. Ждём его только в момент перехода к голосованию.
   await finishPendingBotDecoys();
+  if(!ensurePlayerDecoySubmissions(clue)){setAiBackgroundStatus(false);render();return;}
   setAiBackgroundStatus(false);
   submissions=shuffle(submissions); phase='vote'; render();
   if(storyteller!==0){
@@ -2903,6 +2926,7 @@ async function mpStartRoundIfBot(){
     const humans=mpHumanPlayers(true);
     if(!humans.length){
       await finishPendingBotDecoys(); setAiBackgroundStatus(false); if(onlineIsHost)sendOnline({type:'gameAiStatus',show:false});
+      if(!ensurePlayerDecoySubmissions(clue)){mpSync();render();return;}
       submissions=shuffle(submissions); phase='vote'; mpSync(); render(); startMpBotVoteBackground();
     }
   }
@@ -2977,6 +3001,7 @@ async function mpSubmitClue(actor,text){
   const humans=mpHumanPlayers(true);
   if(!humans.length){
     await finishPendingBotDecoys(); setAiBackgroundStatus(false); if(onlineIsHost)sendOnline({type:'gameAiStatus',show:false});
+    if(!ensurePlayerDecoySubmissions(clue)){mpSync();render();return;}
     submissions=shuffle(submissions); phase='vote'; mpSync(); render(); startMpBotVoteBackground();
   }
 }
@@ -2989,6 +3014,7 @@ async function mpChooseDecoy(actor,i){
   const humans=mpHumanPlayers(true);
   if(humans.every(idx=>submissions.some(s=>s.owner===idx))){
     await finishPendingBotDecoys(); setAiBackgroundStatus(false); if(onlineIsHost)sendOnline({type:'gameAiStatus',show:false});
+    if(!ensurePlayerDecoySubmissions(clue)){mpSync();render();return;}
     submissions=shuffle(submissions); phase='vote';
     mpSync(); render(); startMpBotVoteBackground();
   } else {
@@ -3064,8 +3090,8 @@ function renderStory(){
   }else if(phase==='result'){
     const correct=submissions.findIndex(s=>s.id===secretId);
     const voteNames={};
-    votesThisRound.forEach(v=>{(voteNames[v.card]||(voteNames[v.card]=[])).push(players[v.voter]?.name||'Игрок');});
-    const cardsHtml=submissions.map((s,i)=>{const c=mpCardById(s.id),isSecret=s.id===secretId,voters=voteNames[i]||[];return `<div class="result-card ${isSecret?'secret-card':''}">${card(c,'',true)}<div class="result-card-label">${isSecret?'★ ЗАГАДАННАЯ КАРТА':'КАРТА-ОБМАНКА'}</div><div class="result-owner">${isSecret?'Загадывал':'Предложил'}: <b>${players[s.owner]?.name||''}</b></div><div class="result-votes"><b>Голосовали:</b> ${voters.length?voters.map(n=>`<span class="vote-chip">${n}</span>`).join(''):'<span class="muted">никто</span>'}</div></div>`;}).join('');
+    votesThisRound.forEach(v=>{(voteNames[v.card]||(voteNames[v.card]=[])).push(v);});
+    const cardsHtml=submissions.map((s,i)=>{const c=mpCardById(s.id),isSecret=s.id===secretId,voters=voteNames[i]||[];return `<div class="result-card ${isSecret?'secret-card':''}">${card(c,'',true)}<div class="result-card-label">${isSecret?'★ ЗАГАДАННАЯ КАРТА':'КАРТА-ОБМАНКА'}</div><div class="result-owner">${isSecret?'Загадывал':'Предложил'}: <b>${escapeHtml(players[s.owner]?.name||'')}</b></div><div class="result-votes"><b>Голосовали:</b> ${voters.length?voters.map(voteReasonChip).join(''):'<span class="muted">никто</span>'}</div></div>`;}).join('');
     const fixedLimit=selectedRoundMode!=='end'?Number(selectedRoundMode):Infinity;
     const isFinal=round>=fixedLimit || availableIds.length<players.length;
     el.innerHTML=`<div class="notice"><b>Ассоциация:</b> ${clue}<br><b>Правильную карту выбрали:</b> ${votesThisRound.filter(v=>submissions[v.card]?.id===secretId).length} из ${players.length-1}</div><div class="result-grid">${cardsHtml}</div>${isFinal?'<button onclick="showFinalTable()">Показать итоговую таблицу →</button>':'<button onclick="nextRound()">Следующий раунд →</button>'}`;
